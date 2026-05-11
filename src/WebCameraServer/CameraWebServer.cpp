@@ -35,8 +35,8 @@
 // // ===========================
 // // Enter your WiFi credentials
 // // ===========================
-// const char* ssid = "1%Yelan";
-// const char* password = "12082004";
+// const char* ssid = "HUCE-CBVC";
+// const char* password = "12345678";
 
 // void startCameraServer();
 // void setupLedFlash(int pin);
