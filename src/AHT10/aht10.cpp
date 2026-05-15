@@ -1,7 +1,10 @@
-#define ENABLE_USER_AUTH
-#define ENABLE_DATABASE
+// #define ENABLE_USER_AUTH
+// #define ENABLE_DATABASE
 
 #include <Wire.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>
@@ -10,35 +13,44 @@
 #include <FirebaseClient.h>
 
 // Network and Firebase credentials
-#define WIFI_SSID "HIEU"
-#define WIFI_PASSWORD "31072004"
+// #define WIFI_SSID "LAB 302-5GHz"
+// #define WIFI_PASSWORD "vity1234"
 
-#define Web_API_KEY "AIzaSyBEOYaG4x8giWsCYeuX0vvqx804f0LSVNs"
-#define DATABASE_URL "https://esp32-hotpost-default-rtdb.asia-southeast1.firebasedatabase.app/"
-#define USER_EMAIL "swatgamer317@gmail.com"
-#define USER_PASS "test123456"
+// #define Web_API_KEY "AIzaSyBEOYaG4x8giWsCYeuX0vvqx804f0LSVNs"
+// #define DATABASE_URL "https://esp32-hotpost-default-rtdb.asia-southeast1.firebasedatabase.app/"
+// #define USER_EMAIL "swatgamer317@gmail.com"
+// #define USER_PASS "test123456"
+
+const char* WIFI_SSID = "HUCE-CBVC";
+const char* WIFI_PASSWORD = "12345678";
+
+const char* FIREBASE_PROJECT_ID = "firealarm-8587f";
+const char* FIREBASE_API_KEY = "AIzaSyDrmSoZA86dYSZ0eDKLdC_zzGQspTqLoI0";
+
+const char* COLLECTION_NAME = "sensor_readings";
 
 // User function
-void processData(AsyncResult &aResult);
+// void processData(AsyncResult &aResult);
+void sendDataToFirestore(int sensorId, int value);
 
 // Authentication
-UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
+// UserAuth user_auth(Web_API_KEY, USER_EMAIL, USER_PASS);
 
 // Firebase components
-FirebaseApp app;
-WiFiClientSecure ssl_client;
-using AsyncClient = AsyncClientClass;
-AsyncClient aClient(ssl_client);
-RealtimeDatabase Database;
+// FirebaseApp app;
+// WiFiClientSecure ssl_client;
+// using AsyncClient = AsyncClientClass;
+// AsyncClient aClient(ssl_client);
+// RealtimeDatabase Database;
 
 // Timer variables for sending data every 10 seconds
-unsigned long lastSendTime = 0;
-const unsigned long sendInterval = 10000; // 10 seconds in milliseconds
+// unsigned long lastSendTime = 0;
+// const unsigned long sendInterval = 10000; // 10 seconds in milliseconds
 
 // Variables to send to the database
-int intValue = 0;
-float floatValue = 0.01;
-String stringValue = "";
+// int intValue = 0;
+// float floatValue = 0.01;
+// String stringValue = "";
 
 //oled screen
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
@@ -112,13 +124,13 @@ void setup(void) {
   delay(1000);
 
   // Configure SSL client
-  ssl_client.setInsecure();
-  ssl_client.setHandshakeTimeout(5);
+  // ssl_client.setInsecure();
+  // ssl_client.setHandshakeTimeout(5);
   
-  // Initialize Firebase
-  initializeApp(aClient, app, getAuth(user_auth), processData, "authTask");
-  app.getApp<RealtimeDatabase>(Database);
-  Database.url(DATABASE_URL);
+  // // Initialize Firebase
+  // initializeApp(aClient, app, getAuth(user_auth), processData, "authTask");
+  // app.getApp<RealtimeDatabase>(Database);
+  // Database.url(DATABASE_URL);
 }
 
 void loop() {
@@ -165,38 +177,99 @@ void loop() {
   Serial.print(temp.temperature);
   Serial.println(" °C");
 
-  app.loop();
-  // Check if authentication is ready
-  if (app.ready()){ 
-    // Periodic data sending every 10 seconds
-    unsigned long currentTime = millis();
-    if (currentTime - lastSendTime >= sendInterval){
-      // Update the last send time
-      lastSendTime = currentTime;
+  // app.loop();
+  // // Check if authentication is ready
+  // if (app.ready()){ 
+  //   // Periodic data sending every 10 seconds
+  //   unsigned long currentTime = millis();
+  //   if (currentTime - lastSendTime >= sendInterval){
+  //     // Update the last send time
+  //     lastSendTime = currentTime;
       
-      // Gửi giá trị cảm biến thực tế lên Firebase
-      Database.set<float>(aClient, "/test/temperature", temp.temperature, processData, "RTDB_Send_Temp");
-      Database.set<float>(aClient, "/test/humidity", humidity.relative_humidity, processData, "RTDB_Send_Humidity");
-      Database.set<int>(aClient, "/test/gas", gasValue, processData, "RTDB_Send_Gas");
-    }
-  }
+  //     // Gửi giá trị cảm biến thực tế lên Firebase
+  //     Database.set<float>(aClient, "/test/temperature", temp.temperature, processData, "RTDB_Send_Temp");
+  //     Database.set<float>(aClient, "/test/humidity", humidity.relative_humidity, processData, "RTDB_Send_Humidity");
+  //     Database.set<int>(aClient, "/test/gas", gasValue, processData, "RTDB_Send_Gas");
+  //   }
+  // }
 
-  delay(100);
+  sendDataToFirestore(1, gasValue);
+  sendDataToFirestore(2, humidity.relative_humidity);
+  sendDataToFirestore(3, temp.temperature);
+
+  delay(1000);
 }
 
-void processData(AsyncResult &aResult) {
-  if (!aResult.isResult())
+// void processData(AsyncResult &aResult) {
+//   if (!aResult.isResult())
+//     return;
+
+//   if (aResult.isEvent())
+//     Firebase.printf("Event task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.eventLog().message().c_str(), aResult.eventLog().code());
+
+//   if (aResult.isDebug())
+//     Firebase.printf("Debug task: %s, msg: %s\n", aResult.uid().c_str(), aResult.debug().c_str());
+
+//   if (aResult.isError())
+//     Firebase.printf("Error task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.error().message().c_str(), aResult.error().code());
+
+//   if (aResult.available())
+//     Firebase.printf("task: %s, payload: %s\n", aResult.uid().c_str(), aResult.c_str());
+// }
+
+void sendDataToFirestore(int sensorId, int value) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Error: Not connected to Wi-Fi.");
     return;
+  }
 
-  if (aResult.isEvent())
-    Firebase.printf("Event task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.eventLog().message().c_str(), aResult.eventLog().code());
+  // Assemble the Firestore REST API URL.
+  // By POSTing to the collection name, Firestore creates a random document ID.
+  String url = "https://firestore.googleapis.com/v1/projects/" + String(FIREBASE_PROJECT_ID) +
+               "/databases/(default)/documents/" + String(COLLECTION_NAME) +
+               "?key=" + String(FIREBASE_API_KEY);
 
-  if (aResult.isDebug())
-    Firebase.printf("Debug task: %s, msg: %s\n", aResult.uid().c_str(), aResult.debug().c_str());
+  // Create the request payload (body) in the JSON format required by Firestore.
+  // This structure is the most critical part and a common source of errors.
+  StaticJsonDocument<256> jsonDoc;
+  
+  JsonObject fields = jsonDoc.createNestedObject("fields");
 
-  if (aResult.isError())
-    Firebase.printf("Error task: %s, msg: %s, code: %d\n", aResult.uid().c_str(), aResult.error().message().c_str(), aResult.error().code());
+  JsonObject sensorIdField = fields.createNestedObject("sensorId");
+  sensorIdField["integerValue"] = sensorId;
 
-  if (aResult.available())
-    Firebase.printf("task: %s, payload: %s\n", aResult.uid().c_str(), aResult.c_str());
+  JsonObject valueField = fields.createNestedObject("value");
+  valueField["integerValue"] = value;
+
+  String jsonPayload;
+  serializeJson(jsonDoc, jsonPayload);
+
+  // Start the HTTP request
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+
+  Serial.println("--- STARTING HTTP REQUEST ---");
+  Serial.println("URL: " + url);
+  Serial.println("Payload: " + jsonPayload);
+
+  // Send the POST request with the JSON payload
+  int httpResponseCode = http.POST(jsonPayload);
+
+  // Check the server's response
+  if (httpResponseCode > 0) {
+    String responsePayload = http.getString();
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+    Serial.print("Response: ");
+    Serial.println(responsePayload);
+  } else {
+    Serial.print("Error on POST request. Error code: ");
+    Serial.println(httpResponseCode);
+  }
+
+  Serial.println("--- END OF HTTP REQUEST --- \n");
+
+  // Free resources
+  http.end();
 }
