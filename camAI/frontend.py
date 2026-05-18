@@ -93,7 +93,7 @@ else:
                     )
                     detail_placeholder.caption(f"Phat hien: {summary}")
                 else:
-                    detail_placeholder.caption("Không có đối tượng nào")
+                    detail_placeholder.caption("Khong co doi tuong nao")
 
             st.success("Da xu ly xong video.")
     except Exception as exc:
