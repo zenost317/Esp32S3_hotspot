@@ -79,14 +79,13 @@ void Network::firestoreDataUpdate(double temp, double humidity, int gasValue)
     String documentPath = "devices/4845788";
     FirebaseJson content;
     
-    // Thiết lập giá trị cảm biến
-    content.set("fields/sensors/temperature/value/doubleValue", temp);
-    content.set("fields/sensors/humidity/value/doubleValue", humidity);
-    content.set("fields/sensors/gasValue/value/integerValue", gasValue);
-    // content.set("fields/sensors/timestamp/value/stringValue", String(currentTime).c_str());
+    // Cập nhật giá trị của các fields root-level
+    content.set("fields/temperatureValue/doubleValue", temp);
+    content.set("fields/humidityValue/doubleValue", humidity);
+    content.set("fields/smokeValue/integerValue", gasValue);
 
-    // Cập nhật document bằng patchDocument thay vì createDocument
-    bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperature,humidity,gasValue,timestamp");
+    // updateMask phải match với tên fields thực tế
+    bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue");
     
     if(success)
     {
