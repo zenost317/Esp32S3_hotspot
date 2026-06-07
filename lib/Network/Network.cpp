@@ -1,8 +1,8 @@
 #include "Network.h"
 #include "addons/TokenHelper.h"
 
-#define WIFI_SSID "HUCE-CBVC"
-#define WIFI_PASSWORD "12345678"
+#define WIFI_SSID "HIEU"
+#define WIFI_PASSWORD "31072004"
 
 #define FIREBASE_PROJECT_ID "firealarm-8587f"
 #define FIREBASE_API_KEY "AIzaSyDrmSoZA86dYSZ0eDKLdC_zzGQspTqLoI0"
