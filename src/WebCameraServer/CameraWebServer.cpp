@@ -1,155 +1,229 @@
-// #include "esp_camera.h"
-// #include <WiFi.h>
+#include "esp_camera.h"
+#include <WiFi.h>
+#include "esp_timer.h"
+#include "esp_http_server.h"
 
-// //
-// // WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
-// //            Ensure ESP32 Wrover Module or other board with PSRAM is selected
-// //            Partial images will be transmitted if image exceeds buffer size
-// //
-// //            You must select partition scheme from the board menu that has at least 3MB APP space.
-// //            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15 
-// //            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
+//
+// WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
+//            Ensure ESP32 Wrover Module or other board with PSRAM is selected
+//            Partial images will be transmitted if image exceeds buffer size
+//
+//            You must select partition scheme from the board menu that has at least 3MB APP space.
+//            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15 
+//            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
 
-// // ===================
-// // Select camera model
-// // ===================
-// //#define CAMERA_MODEL_WROVER_KIT // Has PSRAM
-// //#define CAMERA_MODEL_ESP_EYE // Has PSRAM
-// #define CAMERA_MODEL_ESP32S3_EYE // Has PSRAM
-// //#define CAMERA_MODEL_M5STACK_PSRAM // Has PSRAM
-// //#define CAMERA_MODEL_M5STACK_V2_PSRAM // M5Camera version B Has PSRAM
-// //#define CAMERA_MODEL_M5STACK_WIDE // Has PSRAM
-// //#define CAMERA_MODEL_M5STACK_ESP32CAM // No PSRAM
-// //#define CAMERA_MODEL_M5STACK_UNITCAM // No PSRAM
-// //#define CAMERA_MODEL_AI_THINKER // Has PSRAM
-// //#define CAMERA_MODEL_TTGO_T_JOURNAL // No PSRAM
-// //#define CAMERA_MODEL_XIAO_ESP32S3 // Has PSRAM
-// // ** Espressif Internal Boards **
-// //#define CAMERA_MODEL_ESP32_CAM_BOARD
-// //#define CAMERA_MODEL_ESP32S2_CAM_BOARD
-// //#define CAMERA_MODEL_ESP32S3_CAM_LCD
-// //#define CAMERA_MODEL_DFRobot_FireBeetle2_ESP32S3 // Has PSRAM
-// //#define CAMERA_MODEL_DFRobot_Romeo_ESP32S3 // Has PSRAM
-// #include "camera_pins.h"
+#include "board_config.h"
 
-// // ===========================
-// // Enter your WiFi credentials
-// // ===========================
-// const char* ssid = "HUCE-CBVC";
-// const char* password = "12345678";
+// ===========================
+// Enter your WiFi credentials
+// ===========================
+const char* ssid = "HIEU";
+const char* password = "31072004";
 
-// void startCameraServer();
-// void setupLedFlash(int pin);
+// ================== MJPEG STREAM CONFIG ==================
+static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
+static const char* STREAM_BOUNDARY = "--frame";
+static const char* STREAM_PART =
+    "Content-Type: image/jpeg\r\n"
+    "Content-Length: %u\r\n\r\n";
 
-// void setup() {
-//   Serial.begin(115200);
-//   Serial.setDebugOutput(true);
-//   Serial.println();
+static httpd_handle_t s_httpd = NULL;
 
-//   camera_config_t config;
-//   config.ledc_channel = LEDC_CHANNEL_0;
-//   config.ledc_timer = LEDC_TIMER_0;
-//   config.pin_d0 = Y2_GPIO_NUM;
-//   config.pin_d1 = Y3_GPIO_NUM;
-//   config.pin_d2 = Y4_GPIO_NUM;
-//   config.pin_d3 = Y5_GPIO_NUM;
-//   config.pin_d4 = Y6_GPIO_NUM;
-//   config.pin_d5 = Y7_GPIO_NUM;
-//   config.pin_d6 = Y8_GPIO_NUM;
-//   config.pin_d7 = Y9_GPIO_NUM;
-//   config.pin_xclk = XCLK_GPIO_NUM;
-//   config.pin_pclk = PCLK_GPIO_NUM;
-//   config.pin_vsync = VSYNC_GPIO_NUM;
-//   config.pin_href = HREF_GPIO_NUM;
-//   config.pin_sccb_sda = SIOD_GPIO_NUM;
-//   config.pin_sccb_scl = SIOC_GPIO_NUM;
-//   config.pin_pwdn = PWDN_GPIO_NUM;
-//   config.pin_reset = RESET_GPIO_NUM;
-//   config.xclk_freq_hz = 20000000;
-//   config.frame_size = FRAMESIZE_UXGA;
-//   config.pixel_format = PIXFORMAT_JPEG; // for streaming
-//   //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
-//   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-//   config.fb_location = CAMERA_FB_IN_PSRAM;
-//   config.jpeg_quality = 12;
-//   config.fb_count = 1;
-  
-//   // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-//   //                      for larger pre-allocated frame buffer.
-//   if(config.pixel_format == PIXFORMAT_JPEG){
-//     if(psramFound()){
-//       config.jpeg_quality = 10;
-//       config.fb_count = 2;
-//       config.grab_mode = CAMERA_GRAB_LATEST;
-//     } else {
-//       // Limit the frame size when PSRAM is not available
-//       config.frame_size = FRAMESIZE_SVGA;
-//       config.fb_location = CAMERA_FB_IN_DRAM;
-//     }
-//   } else {
-//     // Best option for face detection/recognition
-//     config.frame_size = FRAMESIZE_240X240;
-// #if CONFIG_IDF_TARGET_ESP32S3
-//     config.fb_count = 2;
-// #endif
-//   }
+// =============== Helpers ===============
+static void logMemory(const char* tag) {
+  uint32_t heap = ESP.getFreeHeap();
+  uint32_t psram = ESP.getFreePsram();
+  Serial.printf("[%s] freeHeap=%u bytes | freePSRAM=%u bytes\n", tag, heap, psram);
+}
 
-// #if defined(CAMERA_MODEL_ESP_EYE)
-//   pinMode(13, INPUT_PULLUP);
-//   pinMode(14, INPUT_PULLUP);
-// #endif
+static bool initCamera() {
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
 
-//   // camera init
-//   esp_err_t err = esp_camera_init(&config);
-//   if (err != ESP_OK) {
-//     Serial.printf("Camera init failed with error 0x%x", err);
-//     return;
-//   }
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
 
-//   sensor_t * s = esp_camera_sensor_get();
-//   // initial sensors are flipped vertically and colors are a bit saturated
-//   if (s->id.PID == OV3660_PID) {
-//     s->set_vflip(s, 1); // flip it back
-//     s->set_brightness(s, 1); // up the brightness just a bit
-//     s->set_saturation(s, -2); // lower the saturation
-//   }
-//   // drop down frame size for higher initial frame rate
-//   if(config.pixel_format == PIXFORMAT_JPEG){
-//     s->set_framesize(s, FRAMESIZE_QVGA);
-//   }
+  config.xclk_freq_hz = 40000000;
+  config.pixel_format = PIXFORMAT_JPEG; // for streaming
 
-// #if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-//   s->set_vflip(s, 1);
-//   s->set_hmirror(s, 1);
-// #endif
 
-// #if defined(CAMERA_MODEL_ESP32S3_EYE)
-//   s->set_vflip(s, 1);
-// #endif
+  // Tối ưu ổn định trước
+  config.frame_size   = FRAMESIZE_VGA;
+  config.jpeg_quality = 12;
+  config.fb_count     = 2;
 
-// // Setup LED FLash if LED pin is defined in camera_pins.h
-// #if defined(LED_GPIO_NUM)
-//   setupLedFlash(LED_GPIO_NUM);
-// #endif
+  // Nếu không có PSRAM, giảm cấu hình để tránh crash
+  if (!psramFound()) {
+    Serial.println("PSRAM not found -> downgrade camera settings");
+    config.frame_size = FRAMESIZE_QVGA;
+    config.fb_count   = 1;
+  }
 
-//   WiFi.begin(ssid, password);
-//   WiFi.setSleep(false);
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed: 0x%x\n", err);
+    return false;
+  }
 
-//   while (WiFi.status() != WL_CONNECTED) {
-//     delay(500);
-//     Serial.print(".");
-//   }
-//   Serial.println("");
-//   Serial.println("WiFi connected");
+  sensor_t* s = esp_camera_sensor_get();
+  // Một số tối ưu nhỏ cho chất lượng/ổn định
+  s->set_framesize(s, config.frame_size);
+  s->set_quality(s, config.jpeg_quality);
+  s->set_brightness(s, 0);
+  s->set_contrast(s, 0);
+  s->set_vflip(s, 1);
 
-//   startCameraServer();
+  Serial.println("Camera init OK");
+  return true;
+}
 
-//   Serial.print("Camera Ready! Use 'http://");
-//   Serial.print(WiFi.localIP());
-//   Serial.println("' to connect");
-// }
+// =============== HTTP Handlers ===============
+static esp_err_t index_handler(httpd_req_t* req) {
+  const char* html =
+      "<!doctype html><html><head><meta charset='utf-8'>"
+      "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+      "<title>ESP32-S3 CAM</title></head><body style='font-family:Arial;'>"
+      "<h2>ESP32-S3 Camera Web Server</h2>"
+      "<p>Mo stream: <a href='/stream'>/stream</a></p>"
+      "<img src='/stream' style='max-width:100%;height:auto;'/>"
+      "</body></html>";
 
-// void loop() {
-//   // Do nothing. Everything is done in another task by the web server
-//   delay(10000);
-// }
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t stream_handler(httpd_req_t* req) {
+  httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  while (true) {
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      return ESP_FAIL;
+    }
+
+    // Boundary
+    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+    if (httpd_resp_send_chunk(req, "\r\n", 2) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    // Header part
+    char part_buf[64];
+    int hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, fb->len);
+    if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    // JPEG data
+    if (httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    // End of frame
+    if (httpd_resp_send_chunk(req, "\r\n", 2) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    esp_camera_fb_return(fb);
+
+    // Giảm tải CPU/WiFi, giúp ổn định hơn khi router yếu
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  // Kết thúc response
+  httpd_resp_send_chunk(req, NULL, 0);
+  return ESP_OK;
+}
+
+static void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  config.max_uri_handlers = 8;
+
+  httpd_uri_t index_uri = {
+      .uri = "/",
+      .method = HTTP_GET,
+      .handler = index_handler,
+      .user_ctx = NULL};
+
+  httpd_uri_t stream_uri = {
+      .uri = "/stream",
+      .method = HTTP_GET,
+      .handler = stream_handler,
+      .user_ctx = NULL};
+
+  if (httpd_start(&s_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(s_httpd, &index_uri);
+    httpd_register_uri_handler(s_httpd, &stream_uri);
+    Serial.println("HTTP server started");
+  } else {
+    Serial.println("HTTP server start failed");
+  }
+}
+
+
+void setup() {
+  Serial.begin(115200);
+
+  // PSRAM check
+  if (psramFound()) Serial.println("PSRAM: FOUND");
+  else Serial.println("PSRAM: NOT FOUND");
+
+  // WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.print("WiFi connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("WiFi connected, IP: ");
+  Serial.println(WiFi.localIP());
+
+  // Camera
+  if (!initCamera()) {
+    Serial.println("Camera init failed -> stop");
+    while (true) delay(1000);
+  }
+
+  // Server
+  startCameraServer();
+
+  logMemory("BOOT");
+}
+
+void loop() {
+  // In log nhe moi 5s de theo doi memory (tranh spam Serial)
+  static uint32_t last = 0;
+  if (millis() - last >= 5000) {
+    last = millis();
+    logMemory("RUN");
+  }
+
+  delay(10);
+}

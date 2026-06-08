@@ -1353,10 +1353,10 @@ void startCameraServer()
     ra_filter_init(&ra_filter, 20);
 
 #if CONFIG_ESP_FACE_RECOGNITION_ENABLED
-    recognizer.set_partition(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fr");
-
+    // Partition setup disabled - configure partition table in partitions.csv if needed
+    // recognizer.set_partition(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "fr");
     // load ids from flash partition
-    recognizer.set_ids_from_flash();
+    // recognizer.set_ids_from_flash();
 #endif
     log_i("Starting web server on port: '%d'", config.server_port);
     if (httpd_start(&camera_httpd, &config) == ESP_OK)
