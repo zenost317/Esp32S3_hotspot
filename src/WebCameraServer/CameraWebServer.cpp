@@ -2,23 +2,109 @@
 #include <WiFi.h>
 #include "esp_timer.h"
 #include "esp_http_server.h"
+#include <Wire.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <WiFiClientSecure.h>
+#include "FS.h"
+#include "SD_MMC.h"
 
-//
-// WARNING!!! PSRAM IC required for UXGA resolution and high JPEG quality
-//            Ensure ESP32 Wrover Module or other board with PSRAM is selected
-//            Partial images will be transmitted if image exceeds buffer size
-//
-//            You must select partition scheme from the board menu that has at least 3MB APP space.
-//            Face Recognition is DISABLED for ESP32 and ESP32-S2, because it takes up from 15 
-//            seconds to process single frame. Face Detection is ENABLED if PSRAM is enabled as well
-
+#include "Network.h"
+#include "SensorHandler.h"
 #include "board_config.h"
 
-// ===========================
-// Enter your WiFi credentials
-// ===========================
-const char* ssid = "HIEU";
-const char* password = "31072004";
+void initNetwork();
+
+Network *network;
+
+// Pin SD card trên ESP32-S3 WROOM N16R8 CAM
+#define SD_MMC_CLK  39
+#define SD_MMC_CMD  38
+#define SD_MMC_D0   40
+
+bool sdReady = false;
+
+// oled screen
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels 
+
+#define OLED_SDA 2
+#define OLED_SCL 1
+
+// sensors
+#define SENS_SDA 48
+#define SENS_SCL 47
+
+float tempC = 0, humiPct = 0;
+
+#define MP2_Pin 14
+
+// I2C clock speeds
+#define I2C_CLOCK_OLED 100000  // OLED can handle higher speed
+#define I2C_CLOCK_SENSOR 100000 // AHT10 needs lower speed
+
+TwoWire I2Cone = TwoWire(0);
+TwoWire I2Ctwo = TwoWire(1);
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2Cone, -1);
+
+#define Gas_Threshold 500
+
+// ================== SD CARD CONFIG ==================
+void sdSetup() {
+  // Bắt buộc setPins() TRƯỚC begin() trên ESP32-S3
+  SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+
+  // 1-bit mode (true) — đúng với hardware của board này
+  if (!SD_MMC.begin("/sdcard", true)) {
+    Serial.println("SD_MMC mount failed");
+    return;
+  }
+
+  uint8_t cardType = SD_MMC.cardType();
+  if (cardType == CARD_NONE) {
+    Serial.println("No SD card attached");
+    return;
+  }
+
+  Serial.println("SD card mounted");
+  sdReady = true;
+}
+
+void sdInfo() {
+  if (!sdReady) return;
+  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+  Serial.printf("SD Card Size: %llu MB\n", cardSize);
+}
+
+void sdWriteTest() {
+  if (!sdReady) return;
+  File file = SD_MMC.open("/test.txt", FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    return;
+  }
+  file.println("IoTLabs");
+  file.println("Nghien cuu - Sang tao - Thu nghiem");
+  file.println("Website: https://iotlabs.vn");
+  file.close();
+  Serial.println("Write OK");
+}
+
+void sdReadTest() {
+  if (!sdReady) return;
+  File file = SD_MMC.open("/test.txt");
+  if (!file) {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+  while (file.available()) {
+    Serial.write(file.read());
+  }
+  file.close();
+}
 
 // ================== MJPEG STREAM CONFIG ==================
 static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=frame";
@@ -58,7 +144,7 @@ static bool initCamera() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
 
-  config.xclk_freq_hz = 40000000;
+  config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG; // for streaming
 
 
@@ -94,17 +180,10 @@ static bool initCamera() {
 
 // =============== HTTP Handlers ===============
 static esp_err_t index_handler(httpd_req_t* req) {
-  const char* html =
-      "<!doctype html><html><head><meta charset='utf-8'>"
-      "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-      "<title>ESP32-S3 CAM</title></head><body style='font-family:Arial;'>"
-      "<h2>ESP32-S3 Camera Web Server</h2>"
-      "<p>Mo stream: <a href='/stream'>/stream</a></p>"
-      "<img src='/stream' style='max-width:100%;height:auto;'/>"
-      "</body></html>";
-
-  httpd_resp_set_type(req, "text/html");
-  return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+  // Redirect to stream
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "/stream");
+  return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t stream_handler(httpd_req_t* req) {
@@ -189,23 +268,51 @@ static void startCameraServer() {
 void setup() {
   Serial.begin(115200);
 
+  Serial.setDebugOutput(false); // Disable I2C debug spam
+  delay(500);
+
+  //oled screen
+  I2Cone.begin(OLED_SDA, OLED_SCL, I2C_CLOCK_OLED); 
+  I2Ctwo.begin(SENS_SDA, SENS_SCL, I2C_CLOCK_SENSOR);
+
+  delay(500);
+
+  //sensors
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  // SAU (thay vào)
+  Serial.println("AHT10 test!");
+  if (!sensorInit(I2Ctwo)) {
+    Serial.println("AHT10 Init Failed - Check wiring!");
+    display.setCursor(0, 0);
+    display.println("AHT10 Failed");
+    display.display();
+  } else {
+    Serial.println("AHT10 OK");
+  }
+
+  analogSetAttenuation(ADC_11db);
+
+  // Hiển thị trạng thái kết nối WiFi lên màn hình
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Connecting to Wi-Fi...");
+  display.display();
+
   // PSRAM check
   if (psramFound()) Serial.println("PSRAM: FOUND");
   else Serial.println("PSRAM: NOT FOUND");
 
-  // WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("WiFi connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.print("WiFi connected, IP: ");
-  Serial.println(WiFi.localIP());
+  // Connect to Wi-Fi
+  initNetwork();
 
-  // Camera
+    // Camera
   if (!initCamera()) {
     Serial.println("Camera init failed -> stop");
     while (true) delay(1000);
@@ -214,10 +321,64 @@ void setup() {
   // Server
   startCameraServer();
 
+  // SD card
+  sdSetup();
+  sdInfo();
+  sdWriteTest();
+  sdReadTest();
+
   logMemory("BOOT");
 }
 
 void loop() {
+  yield();
+
+  int gasValue = analogRead(MP2_Pin);
+  yield();
+
+  float tempC = 0, humiPct = 0;
+  bool sensor_ok = sensorRead(tempC, humiPct); // retry nằm trong SensorHandler
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  if (!sensor_ok) {
+    display.setCursor(0, 0);
+    display.println("Sensor Error!");
+    display.println("Gas:");
+    display.println(gasValue);
+  } else {
+    display.setCursor(0, 0);
+    display.print(F("Temp: "));
+    display.print(tempC);
+    display.print(" ");
+    display.cp437(true);
+    display.write(167);  // ký tự °
+    display.println("C");
+
+    display.setCursor(0, 10);
+    display.print(F("Humidity: "));
+    display.print(humiPct);
+    display.println(" % rH");
+
+    display.setCursor(0, 20);
+    display.print(F("Gas: "));
+    display.println(gasValue);
+  }
+
+  display.display();
+  yield();
+
+  if (sensor_ok) {
+    network->firestoreDataUpdate(tempC, humiPct, gasValue);
+  }
+
+  for (int i = 0; i < 10; i++) {
+    delay(100);
+    yield();
+  }
+
   // In log nhe moi 5s de theo doi memory (tranh spam Serial)
   static uint32_t last = 0;
   if (millis() - last >= 5000) {
@@ -226,4 +387,9 @@ void loop() {
   }
 
   delay(10);
+}
+
+void initNetwork(){
+  network = new Network();
+  network->initWiFi();
 }

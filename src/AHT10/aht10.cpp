@@ -13,16 +13,20 @@
 
 // Network *network;
 
-// //oled screen
+// // oled screen
 // #define SCREEN_WIDTH 128 // OLED display width, in pixels
 // #define SCREEN_HEIGHT 32 // OLED display height, in pixels 
 
 // #define OLED_SDA 14
 // #define OLED_SCL 13
 
+// // sensors
 // #define SENS_SDA 8
 // #define SENS_SCL 9
 
+// #define MP2_Pin 10
+
+// // I2C clock speeds
 // #define I2C_CLOCK_OLED 100000  // OLED can handle higher speed
 // #define I2C_CLOCK_SENSOR 100000 // AHT10 needs lower speed
 
@@ -35,7 +39,7 @@
 
 // Adafruit_Sensor *aht_humidity, *aht_temp;
 
-// #define MP2_Pin 10
+
 // #define Gas_Threshold 500
 
 // void setup(void) {

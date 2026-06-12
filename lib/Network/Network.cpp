@@ -31,6 +31,9 @@ void WiFiEventGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
 void WiFiEventDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) 
 {
     Serial.println("Wi-Fi disconnected");
+    Serial.println(info.wifi_sta_disconnected.reason);
+    Serial.println("Trying to Reconnect");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
 void FirestoreTokenStatusCallback(TokenInfo info)
@@ -45,6 +48,14 @@ void Network::initWiFi()
     WiFi.onEvent(WiFiEventGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
     WiFi.onEvent(WiFiEventDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);   
+    Serial.print("WiFi connecting");
+    while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    }
+    Serial.println();
+    Serial.print("WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
 }
 
 void Network::firebaseInit() 
