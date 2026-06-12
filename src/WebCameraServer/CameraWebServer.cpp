@@ -30,12 +30,12 @@ bool sdReady = false;
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels 
 
-#define OLED_SDA 2
-#define OLED_SCL 1
+#define OLED_SDA 41
+#define OLED_SCL 42
 
 // sensors
-#define SENS_SDA 48
-#define SENS_SCL 47
+#define SENS_SDA 36
+#define SENS_SCL 35
 
 float tempC = 0, humiPct = 0;
 

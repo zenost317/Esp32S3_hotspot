@@ -50,8 +50,8 @@ void Network::initWiFi()
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);   
     Serial.print("WiFi connecting");
     while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+        delay(500);
+        Serial.print(".");
     }
     Serial.println();
     Serial.print("WiFi connected, IP: ");
