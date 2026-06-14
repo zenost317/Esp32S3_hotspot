@@ -18,6 +18,7 @@ class Network
         Network();
         void initWiFi();
         void firebaseInit();
+        bool firebaseReady();
         void firestoreDataUpdate(double temp, double humidity, int gasValue);
 };
 

@@ -30,25 +30,25 @@ bool sdReady = false;
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels 
 
-#define OLED_SDA 41
-#define OLED_SCL 42
-
-// sensors
-#define SENS_SDA 36
-#define SENS_SCL 35
+// OLED and AHT10 must share this external I2C bus.
+#define EXTERNAL_I2C_SDA 47
+#define EXTERNAL_I2C_SCL 21
 
 float tempC = 0, humiPct = 0;
 
 #define MP2_Pin 14
 
 // I2C clock speeds
-#define I2C_CLOCK_OLED 100000  // OLED can handle higher speed
-#define I2C_CLOCK_SENSOR 100000 // AHT10 needs lower speed
+#define I2C_CLOCK_CAMERA 100000
+#define I2C_CLOCK_EXTERNAL 100000 // AHT10 and OLED share this bus
+#define CAMERA_SCCB_I2C_PORT 0
+#define EXTERNAL_I2C_PORT 1
 
-TwoWire I2Cone = TwoWire(0);
-TwoWire I2Ctwo = TwoWire(1);
+TwoWire I2CCamera = TwoWire(CAMERA_SCCB_I2C_PORT);
+TwoWire I2CExternal = TwoWire(EXTERNAL_I2C_PORT);
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2Cone, -1);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2CExternal, -1);
+bool displayReady = false;
 
 #define Gas_Threshold 500
 
@@ -123,7 +123,7 @@ static void logMemory(const char* tag) {
 }
 
 static bool initCamera() {
-  camera_config_t config;
+  camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
 
@@ -139,8 +139,9 @@ static bool initCamera() {
   config.pin_pclk = PCLK_GPIO_NUM;
   config.pin_vsync = VSYNC_GPIO_NUM;
   config.pin_href = HREF_GPIO_NUM;
-  config.pin_sccb_sda = SIOD_GPIO_NUM;
-  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_sccb_sda = -1;
+  config.pin_sccb_scl = -1;
+  config.sccb_i2c_port = CAMERA_SCCB_I2C_PORT;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
 
@@ -271,28 +272,40 @@ void setup() {
   Serial.setDebugOutput(false); // Disable I2C debug spam
   delay(500);
 
-  //oled screen
-  I2Cone.begin(OLED_SDA, OLED_SCL, I2C_CLOCK_OLED); 
-  I2Ctwo.begin(SENS_SDA, SENS_SCL, I2C_CLOCK_SENSOR);
+  // Preconfigure SCCB so the camera driver reuses I2C controller 0.
+  I2CCamera.begin(SIOD_GPIO_NUM, SIOC_GPIO_NUM, I2C_CLOCK_CAMERA);
+
+  // Camera
+  if (!initCamera()) {
+    Serial.println("Camera init failed -> stop");
+    while (true) delay(1000);
+  }
+
+  // Keep external I2C devices on controller 1.
+  I2CExternal.begin(EXTERNAL_I2C_SDA, EXTERNAL_I2C_SCL, I2C_CLOCK_EXTERNAL);
 
   delay(500);
 
   //sensors
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+  displayReady = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  if(!displayReady) {
     Serial.println(F("SSD1306 allocation failed"));
-    for(;;);
   }
   
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
+  if (displayReady) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+  }
 
   // SAU (thay vào)
   Serial.println("AHT10 test!");
-  if (!sensorInit(I2Ctwo)) {
+  if (!sensorInit(I2CExternal)) {
     Serial.println("AHT10 Init Failed - Check wiring!");
-    display.setCursor(0, 0);
-    display.println("AHT10 Failed");
-    display.display();
+    if (displayReady) {
+      display.setCursor(0, 0);
+      display.println("AHT10 Failed");
+      display.display();
+    }
   } else {
     Serial.println("AHT10 OK");
   }
@@ -300,10 +313,12 @@ void setup() {
   analogSetAttenuation(ADC_11db);
 
   // Hiển thị trạng thái kết nối WiFi lên màn hình
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("Connecting to Wi-Fi...");
-  display.display();
+  if (displayReady) {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Connecting to Wi-Fi...");
+    display.display();
+  }
 
   // PSRAM check
   if (psramFound()) Serial.println("PSRAM: FOUND");
@@ -311,12 +326,7 @@ void setup() {
 
   // Connect to Wi-Fi
   initNetwork();
-
-    // Camera
-  if (!initCamera()) {
-    Serial.println("Camera init failed -> stop");
-    while (true) delay(1000);
-  }
+  network->firebaseInit();
 
   // Server
   startCameraServer();
@@ -339,35 +349,37 @@ void loop() {
   float tempC = 0, humiPct = 0;
   bool sensor_ok = sensorRead(tempC, humiPct); // retry nằm trong SensorHandler
 
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  if (displayReady) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
 
-  if (!sensor_ok) {
-    display.setCursor(0, 0);
-    display.println("Sensor Error!");
-    display.println("Gas:");
-    display.println(gasValue);
-  } else {
-    display.setCursor(0, 0);
-    display.print(F("Temp: "));
-    display.print(tempC);
-    display.print(" ");
-    display.cp437(true);
-    display.write(167);  // ký tự °
-    display.println("C");
+    if (!sensor_ok) {
+      display.setCursor(0, 0);
+      display.println("Sensor Error!");
+      display.println("Gas:");
+      display.println(gasValue);
+    } else {
+      display.setCursor(0, 0);
+      display.print(F("Temp: "));
+      display.print(tempC);
+      display.print(" ");
+      display.cp437(true);
+      display.write(167);  // ký tự °
+      display.println("C");
 
-    display.setCursor(0, 10);
-    display.print(F("Humidity: "));
-    display.print(humiPct);
-    display.println(" % rH");
+      display.setCursor(0, 10);
+      display.print(F("Humidity: "));
+      display.print(humiPct);
+      display.println(" % rH");
 
-    display.setCursor(0, 20);
-    display.print(F("Gas: "));
-    display.println(gasValue);
+      display.setCursor(0, 20);
+      display.print(F("Gas: "));
+      display.println(gasValue);
+    }
+
+    display.display();
   }
-
-  display.display();
   yield();
 
   if (sensor_ok) {

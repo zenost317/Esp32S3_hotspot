@@ -71,6 +71,11 @@ void Network::firebaseInit()
     Firebase.begin(&config, &auth);
 }
 
+bool Network::firebaseReady()
+{
+    return Firebase.ready();
+}
+
 void Network::firestoreDataUpdate(double temp, double humidity, int gasValue)
 {
     // Kiểm tra timeout để tránh gọi Firebase quá tần suất
@@ -82,6 +87,12 @@ void Network::firestoreDataUpdate(double temp, double humidity, int gasValue)
     }
     
     if(WiFi.status() != WL_CONNECTED)
+    {
+        yield();
+        return;
+    }
+
+    if(!Firebase.ready())
     {
         yield();
         return;
