@@ -10,12 +10,14 @@
 #include <WiFiClientSecure.h>
 #include "FS.h"
 #include "SD_MMC.h"
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
 
 #include "Network.h"
 #include "SensorHandler.h"
 #include "board_config.h"
 
-void initNetwork();
+bool initNetwork();
 
 Network *network;
 
@@ -324,16 +326,28 @@ void setup() {
   if (psramFound()) Serial.println("PSRAM: FOUND");
   else Serial.println("PSRAM: NOT FOUND");
 
-  // Connect to Wi-Fi
-  initNetwork();
-  network->firebaseInit();
-
-  // Server
-  startCameraServer();
-
-  // SD card
+  // SD card must be mounted before Network reads/writes WiFi config files.
   sdSetup();
   sdInfo();
+
+  // Connect to Wi-Fi, or start the WiFi Manager AP when saved config fails.
+  bool wifiConnected = initNetwork();
+  if (wifiConnected) {
+    network->firebaseInit();
+
+    // Server
+    startCameraServer();
+  } else if (displayReady) {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("WiFi Manager AP");
+    display.println("ESP-WIFI-MANAGER");
+    display.print("IP: ");
+    display.println(WiFi.softAPIP());
+    display.display();
+  }
+
+  // SD card test files
   sdWriteTest();
   sdReadTest();
 
@@ -401,7 +415,7 @@ void loop() {
   delay(10);
 }
 
-void initNetwork(){
+bool initNetwork(){
   network = new Network();
-  network->initWiFi();
+  return network->initWiFi();
 }
