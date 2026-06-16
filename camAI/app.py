@@ -21,9 +21,9 @@ from ultralytics import YOLO
 
 MODEL_PATH = Path(__file__).with_name("yolov8_perfect_model.pt")
 FIREBASE_CONFIG_PATH = Path(__file__).with_name("firebaseConfig.js")
-DEFAULT_SENSOR_URL = "http://192.168.4.1/sensor"
+DEFAULT_SENSOR_URL = "http://192.168.1.200"
 DEFAULT_FIREBASE_SENSOR_PATH = "devices"
-DEFAULT_CAMERA_STREAM_URL = "http://192.168.4.1:81/stream"
+DEFAULT_CAMERA_STREAM_URL = "http://192.168.1.200/stream"
 DEFAULT_WEATHER_NAME = "Hà Nội"
 DEFAULT_WEATHER_LATITUDE = 21.0278
 DEFAULT_WEATHER_LONGITUDE = 105.8342

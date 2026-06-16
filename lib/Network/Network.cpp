@@ -47,6 +47,15 @@ bool Network::initConfigStorage()
         Serial.println("SD card is not mounted or no card is attached");
         return false;
     }
+
+    if (!SD_MMC.exists(wifiConfigDir)) {
+        Serial.printf("Config folder %s not found, creating it\r\n", wifiConfigDir);
+        if (!SD_MMC.mkdir(wifiConfigDir)) {
+            Serial.println("Failed to create /wifi folder on SD card");
+            return false;
+        }
+    }
+
     Serial.println("SD card config storage ready");
     return true;
 }
@@ -291,7 +300,7 @@ bool Network::firebaseReady()
     return Firebase.ready();
 }
 
-void Network::firestoreDataUpdate(double temp, double humidity, int gasValue)
+void Network::firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue)
 {
     // Kiểm tra timeout để tránh gọi Firebase quá tần suất
     unsigned long currentTime = millis();
@@ -320,9 +329,9 @@ void Network::firestoreDataUpdate(double temp, double humidity, int gasValue)
     content.set("fields/temperatureValue/doubleValue", temp);
     content.set("fields/humidityValue/doubleValue", humidity);
     content.set("fields/smokeValue/integerValue", gasValue);
-
+    content.set("fields/fireValue/integerValue", fireValue);
     // updateMask phải match với tên fields thực tế
-    bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue");
+    bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue,fireValue");
     
     if(success)
     {

@@ -20,10 +20,11 @@ class Network
         const char* PARAM_INPUT_2 = "pass";
         const char* PARAM_INPUT_3 = "ip";
         const char* PARAM_INPUT_4 = "gateway";
-        const char* ssidPath = "/ssid.txt";
-        const char* passPath = "/pass.txt";
-        const char* ipPath = "/ip.txt";
-        const char* gatewayPath = "/gateway.txt";
+        const char* wifiConfigDir = "/wifi";
+        const char* ssidPath = "/wifi/ssid.txt";
+        const char* passPath = "/wifi/pass.txt";
+        const char* ipPath = "/wifi/ip.txt";
+        const char* gatewayPath = "/wifi/gateway.txt";
         IPAddress localIP;
         IPAddress localGateway;
         IPAddress subnet = IPAddress(255, 255, 0, 0);
@@ -41,7 +42,7 @@ class Network
         bool initWiFi();
         void firebaseInit();
         bool firebaseReady();
-        void firestoreDataUpdate(double temp, double humidity, int gasValue);
+        void firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue);
 };
 
 #endif

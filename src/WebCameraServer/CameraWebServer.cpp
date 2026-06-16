@@ -39,6 +39,7 @@ bool sdReady = false;
 float tempC = 0, humiPct = 0;
 
 #define MP2_Pin 14
+#define Fire_Pin 3
 
 // I2C clock speeds
 #define I2C_CLOCK_CAMERA 100000
@@ -153,7 +154,7 @@ static bool initCamera() {
 
   // Tối ưu ổn định trước
   config.frame_size   = FRAMESIZE_VGA;
-  config.jpeg_quality = 12;
+  config.jpeg_quality = 15;
   config.fb_count     = 2;
 
   // Nếu không có PSRAM, giảm cấu hình để tránh crash
@@ -358,6 +359,7 @@ void loop() {
   yield();
 
   int gasValue = analogRead(MP2_Pin);
+  int fireValue = analogRead(Fire_Pin);
   yield();
 
   float tempC = 0, humiPct = 0;
@@ -373,6 +375,8 @@ void loop() {
       display.println("Sensor Error!");
       display.println("Gas:");
       display.println(gasValue);
+      display.println("Fire:");
+      display.println(fireValue);
     } else {
       display.setCursor(0, 0);
       display.print(F("Temp: "));
@@ -390,6 +394,10 @@ void loop() {
       display.setCursor(0, 20);
       display.print(F("Gas: "));
       display.println(gasValue);
+
+      display.setCursor(70, 20);
+      display.print(F("Fire: "));
+      display.println(fireValue);
     }
 
     display.display();
@@ -397,7 +405,7 @@ void loop() {
   yield();
 
   if (sensor_ok) {
-    network->firestoreDataUpdate(tempC, humiPct, gasValue);
+    network->firestoreDataUpdate(tempC, humiPct, gasValue, fireValue);
   }
 
   for (int i = 0; i < 10; i++) {
