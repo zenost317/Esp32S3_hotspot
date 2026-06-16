@@ -1340,11 +1340,3 @@ if start_clicked:
             frame_width,
             max_seconds=stream_analysis_seconds,
         )
-
-if auto_refresh and not start_clicked:
-    progress_text = st.empty()
-    for remaining in range(refresh_interval, 0, -1):
-        progress_text.caption(f"Cập nhật lại sau {remaining}s ...")
-        time.sleep(1)
-    progress_text.empty()
-    st.rerun()
