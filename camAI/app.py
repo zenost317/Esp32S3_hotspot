@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
 from html import escape
 from pathlib import Path
+from typing import Any, Generator
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, unquote
+from urllib.request import Request, urlopen
 import base64
 import json
 import re
 import time
-from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, unquote
-from urllib.request import Request, urlopen
 
 import cv2
 import streamlit as st
@@ -864,6 +865,41 @@ def build_alert_state(detected_names: list[str]) -> tuple[str, str]:
     return "normal", "Bình thường - không phát hiện nguy cơ cháy."
 
 
+def send_alert_to_esp32(esp32_base_url: str, detected_names: list[str], timeout: float = 2.0) -> bool:
+    """Gửi kết quả phân tích AI (khói/lửa) về ESP32 qua HTTP POST."""
+    detected_set = {name.lower() for name in detected_names}
+    has_fire = "fire" in detected_set
+    has_smoke = "smoke" in detected_set
+
+    if not has_fire and not has_smoke:
+        alert_type = "none"
+    elif has_fire and has_smoke:
+        alert_type = "fire_and_smoke"
+    elif has_fire:
+        alert_type = "fire"
+    else:
+        alert_type = "smoke"
+
+    payload = json.dumps({
+        "alert_type": alert_type,
+        "has_fire": has_fire,
+        "has_smoke": has_smoke,
+    }).encode("utf-8")
+
+    alert_url = esp32_base_url.rstrip("/") + "/ai_alert"
+    request = Request(
+        alert_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def resize_frame(frame, frame_width: int):
     if frame is None or frame.shape[1] <= frame_width:
         return frame
@@ -1020,7 +1056,7 @@ with st.sidebar:
     firebase_project_id = "firealarm-8587f"
     firebase_sensor_path = "House/Room1"
     sensor_timeout = 3.0
-    auto_refresh = True
+    auto_refresh = False
     refresh_interval = 5
 
     refresh_clicked = st.button("Cập nhật thông số", use_container_width=True)
