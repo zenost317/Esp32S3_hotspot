@@ -13,6 +13,8 @@ AsyncWebServer server(80);
 #define USER_EMAIL "swatgamer317@gmail.com"
 #define USER_PASSWORD "test123456"
 
+static const char* FIRESTORE_DOCUMENT_PATH = "devices/4845788";
+
 Network::Network()
 {
 }
@@ -292,7 +294,9 @@ void Network::firebaseInit()
     config.timeout.serverResponse = 10 * 1000; // 10 seconds
     config.token_status_callback = FirestoreTokenStatusCallback;
 
+    Firebase.reconnectWiFi(true);
     Firebase.begin(&config, &auth);
+    Serial.printf("[Firebase] Init requested for project %s, document %s\n", FIREBASE_PROJECT_ID, FIRESTORE_DOCUMENT_PATH);
 }
 
 bool Network::firebaseReady()
@@ -312,25 +316,36 @@ void Network::firestoreDataUpdate(double temp, double humidity, int gasValue, in
     
     if(WiFi.status() != WL_CONNECTED)
     {
+        static unsigned long lastWifiLogTime = 0;
+        if(currentTime - lastWifiLogTime >= 5000)
+        {
+            Serial.printf("[Firestore] Skip update: WiFi disconnected, status=%d\n", WiFi.status());
+            lastWifiLogTime = currentTime;
+        }
         yield();
         return;
     }
 
     if(!Firebase.ready())
     {
+        static unsigned long lastFirebaseLogTime = 0;
+        if(currentTime - lastFirebaseLogTime >= 5000)
+        {
+            Serial.println("[Firestore] Skip update: Firebase is not ready yet");
+            lastFirebaseLogTime = currentTime;
+        }
         yield();
         return;
     }
 
-    String documentPath = "devices/4845788";
+    String documentPath = FIRESTORE_DOCUMENT_PATH;
     FirebaseJson content;
     
-    // Cập nhật giá trị của các fields root-level
     content.set("fields/temperatureValue/doubleValue", temp);
     content.set("fields/humidityValue/doubleValue", humidity);
-    content.set("fields/smokeValue/integerValue", gasValue);
-    content.set("fields/fireValue/integerValue", fireValue);
-    // updateMask phải match với tên fields thực tế
+    content.set("fields/smokeValue/integerValue", String(gasValue));
+    content.set("fields/fireValue/integerValue", String(fireValue));
+
     bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue,fireValue");
     
     if(success)
@@ -348,4 +363,86 @@ void Network::firestoreDataUpdate(double temp, double humidity, int gasValue, in
     
     // Force cleanup to avoid memory leak
     fbdo.clear();
+}
+
+bool Network::firestoreAiDataUpdate(
+    double temp,
+    double humidity,
+    int gasValue,
+    int fireValue,
+    bool cameraFireDetected,
+    bool cameraSmokeDetected,
+    bool sensorOverThreshold,
+    const String& alertType,
+    const String& edgeCase,
+    const String& imagePath,
+    const String& logPath,
+    const String& timestamp
+)
+{
+    unsigned long currentTime = millis();
+    if(currentTime - lastAiUpdateTime < AI_UPDATE_INTERVAL)
+    {
+        yield();
+        return false;
+    }
+
+    if(WiFi.status() != WL_CONNECTED)
+    {
+        Serial.printf("[Firestore AI] Skip update: WiFi disconnected, status=%d\n", WiFi.status());
+        yield();
+        return false;
+    }
+
+    if(!Firebase.ready())
+    {
+        Serial.println("[Firestore AI] Skip update: Firebase is not ready yet");
+        yield();
+        return false;
+    }
+
+    String documentPath = FIRESTORE_DOCUMENT_PATH;
+    FirebaseJson content;
+
+    content.set("fields/temperatureValue/doubleValue", temp);
+    content.set("fields/humidityValue/doubleValue", humidity);
+    content.set("fields/smokeValue/integerValue", String(gasValue));
+    content.set("fields/fireValue/integerValue", String(fireValue));
+    content.set("fields/cameraFireDetected/booleanValue", cameraFireDetected);
+    content.set("fields/cameraSmokeDetected/booleanValue", cameraSmokeDetected);
+    content.set("fields/sensorOverThreshold/booleanValue", sensorOverThreshold);
+    content.set("fields/cameraAlertType/stringValue", alertType);
+    content.set("fields/edgeCase/stringValue", edgeCase);
+    content.set("fields/lastAiImagePath/stringValue", imagePath);
+    content.set("fields/lastAiLogPath/stringValue", logPath);
+    content.set("fields/aiUpdatedAt/stringValue", timestamp);
+
+    const char* updateMask =
+        "temperatureValue,humidityValue,smokeValue,fireValue,"
+        "cameraFireDetected,cameraSmokeDetected,sensorOverThreshold,"
+        "cameraAlertType,edgeCase,lastAiImagePath,lastAiLogPath,aiUpdatedAt";
+
+    bool success = Firebase.Firestore.patchDocument(
+        &fbdo,
+        FIREBASE_PROJECT_ID,
+        "",
+        documentPath.c_str(),
+        content.raw(),
+        updateMask
+    );
+
+    if(success)
+    {
+        Serial.println("[Firestore AI] Update SUCCESS");
+        lastAiUpdateTime = currentTime;
+    }
+    else
+    {
+        String errorMsg = fbdo.errorReason().c_str();
+        Serial.printf("[Firestore AI] Error: %s\n", errorMsg.c_str());
+    }
+
+    fbdo.clear();
+    yield();
+    return success;
 }

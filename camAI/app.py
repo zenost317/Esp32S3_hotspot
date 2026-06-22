@@ -7,7 +7,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Generator
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 import base64
 import json
@@ -19,11 +19,11 @@ import streamlit as st
 from ultralytics import YOLO
 
 
-MODEL_PATH = Path(__file__).with_name("yolov8_perfect_model.pt")
+MODEL_PATH = Path(__file__).with_name("best (3).pt")
 FIREBASE_CONFIG_PATH = Path(__file__).with_name("firebaseConfig.js")
 DEFAULT_SENSOR_URL = "http://192.168.1.200"
-DEFAULT_FIREBASE_SENSOR_PATH = "devices"
-DEFAULT_CAMERA_STREAM_URL = "http://192.168.1.200/stream"
+DEFAULT_FIREBASE_SENSOR_PATH = "devices/4845788"
+DEFAULT_CAMERA_STREAM_URL = "http://192.168.1.200"
 DEFAULT_WEATHER_NAME = "Hà Nội"
 DEFAULT_WEATHER_LATITUDE = 21.0278
 DEFAULT_WEATHER_LONGITUDE = 105.8342
@@ -31,6 +31,7 @@ DEFAULT_WEATHER_TIMEOUT = 3.0
 DEFAULT_CONFIDENCE = 0.3
 DEFAULT_FRAME_WIDTH = 960
 DEFAULT_STREAM_ANALYSIS_SECONDS = 60
+DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS = 8.0
 
 
 @dataclass(frozen=True)
@@ -368,6 +369,7 @@ SMOKE_ICON = """
 
 SENSOR_TEMPERATURE_KEYS = (
     "temperature",
+    "temperaturevalue",
     "temperature_c",
     "temp",
     "temp_c",
@@ -378,6 +380,7 @@ SENSOR_TEMPERATURE_KEYS = (
 )
 SENSOR_HUMIDITY_KEYS = (
     "humidity",
+    "humidityvalue",
     "humidity_percent",
     "hum",
     "air_humidity",
@@ -387,6 +390,7 @@ SENSOR_HUMIDITY_KEYS = (
 )
 SENSOR_SMOKE_KEYS = (
     "smoke",
+    "smokevalue",
     "smoke_percent",
     "khoi",
     "gas",
@@ -865,8 +869,29 @@ def build_alert_state(detected_names: list[str]) -> tuple[str, str]:
     return "normal", "Bình thường - không phát hiện nguy cơ cháy."
 
 
-def send_alert_to_esp32(esp32_base_url: str, detected_names: list[str], timeout: float = 2.0) -> bool:
-    """Gửi kết quả phân tích AI (khói/lửa) về ESP32 qua HTTP POST."""
+def _esp32_base_url_from_camera_url(camera_url: str) -> str:
+    parts = urlsplit(camera_url.strip())
+    if not parts.scheme or not parts.netloc:
+        return camera_url.strip().rstrip("/")
+    return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
+
+
+def frame_to_jpeg_bytes(frame_rgb, quality: int = 85) -> bytes:
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    ok, buffer = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise RuntimeError("Không thể mã hóa khung hình JPEG.")
+    return buffer.tobytes()
+
+
+def send_alert_to_esp32(
+    esp32_base_url: str,
+    detected_names: list[str],
+    annotated_frame_rgb=None,
+    detections: list[str] | None = None,
+    timeout: float = 2.0,
+) -> bool:
+    """Gửi kết quả phân tích AI (khói/lửa) và ảnh đã nhận diện về ESP32 qua HTTP POST."""
     detected_set = {name.lower() for name in detected_names}
     has_fire = "fire" in detected_set
     has_smoke = "smoke" in detected_set
@@ -880,17 +905,23 @@ def send_alert_to_esp32(esp32_base_url: str, detected_names: list[str], timeout:
     else:
         alert_type = "smoke"
 
-    payload = json.dumps({
-        "alert_type": alert_type,
-        "has_fire": has_fire,
-        "has_smoke": has_smoke,
-    }).encode("utf-8")
+    image_payload = b""
+    if annotated_frame_rgb is not None:
+        image_payload = frame_to_jpeg_bytes(annotated_frame_rgb)
 
-    alert_url = esp32_base_url.rstrip("/") + "/ai_alert"
+    query = urlencode({
+        "alert_type": alert_type,
+        "has_fire": int(has_fire),
+        "has_smoke": int(has_smoke),
+        "detections": "; ".join(detections or [])[:240],
+        "captured_at": datetime.now().strftime("%Y%m%d_%H%M%S"),
+    })
+
+    alert_url = _esp32_base_url_from_camera_url(esp32_base_url) + "/ai_alert?" + query
     request = Request(
         alert_url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
+        data=image_payload,
+        headers={"Content-Type": "image/jpeg" if image_payload else "application/octet-stream"},
         method="POST",
     )
     try:
@@ -908,11 +939,7 @@ def resize_frame(frame, frame_width: int):
 
 
 def frame_to_data_uri(frame_rgb) -> str:
-    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-    ok, buffer = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-    if not ok:
-        raise RuntimeError("Không thể mã hóa khung hình để hiển thị.")
-    encoded = base64.b64encode(buffer).decode("ascii")
+    encoded = base64.b64encode(frame_to_jpeg_bytes(frame_rgb)).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
 
 
@@ -976,6 +1003,7 @@ def process_video_source(
     status_placeholder = st.empty()
     detail_placeholder = st.empty()
     started_at = time.time()
+    last_alert_sent_at = 0.0
 
     try:
         while cap.isOpened():
@@ -1005,13 +1033,31 @@ def process_video_source(
             annotated_frame = results[0].plot()
             annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
 
+            detected_set = {name.lower() for name in detected_names}
+            should_send_alert = bool({"fire", "smoke"} & detected_set)
+            esp32_alert_sent: bool | None = None
+            now = time.time()
+            if should_send_alert and now - last_alert_sent_at >= DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS:
+                esp32_alert_sent = send_alert_to_esp32(
+                    video_source,
+                    detected_names,
+                    annotated_frame,
+                    detections,
+                )
+                last_alert_sent_at = now
+
             frame_placeholder.html(render_processed_frame(annotated_frame, level, message))
 
             with status_placeholder.container():
                 show_status(level, message)
 
             if detections:
-                detail_placeholder.caption("Phát hiện: " + ", ".join(detections))
+                esp32_status = ""
+                if esp32_alert_sent is True:
+                    esp32_status = " | ESP32: đã nhận cảnh báo"
+                elif esp32_alert_sent is False:
+                    esp32_status = " | ESP32: chưa nhận được cảnh báo"
+                detail_placeholder.caption("Phát hiện: " + ", ".join(detections) + esp32_status)
             else:
                 detail_placeholder.caption("Không có đối tượng nào trong khung hình.")
     finally:
@@ -1049,12 +1095,12 @@ firebase_default_database_url = _firebase_database_url(firebase_config)
 
 with st.sidebar:
     st.header("Thiết bị môi trường")
-    st.info("Dữ liệu đang được đồng bộ trực tiếp từ House/Room1")
+    st.info(f"Dữ liệu đang được đồng bộ trực tiếp từ {DEFAULT_FIREBASE_SENSOR_PATH}")
     
     sensor_source = "Firebase"
     firebase_service = "Firestore"
     firebase_project_id = "firealarm-8587f"
-    firebase_sensor_path = "House/Room1"
+    firebase_sensor_path = DEFAULT_FIREBASE_SENSOR_PATH
     sensor_timeout = 3.0
     auto_refresh = False
     refresh_interval = 5
