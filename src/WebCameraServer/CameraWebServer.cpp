@@ -280,7 +280,7 @@ static bool saveRequestBodyToFile(httpd_req_t* req, const String& path) {
   return true;
 }
 
-static bool writeAiLogFile(
+static bool writeLogFile(
     const String& path,
     const String& timestamp,
     const String& alertType,
@@ -536,7 +536,7 @@ static esp_err_t ai_alert_handler(httpd_req_t* req) {
     logPath = "/log/" + fileStem + ".txt";
 
     imageSaved = saveRequestBodyToFile(req, imagePath);
-    logSaved = writeAiLogFile(
+    logSaved = writeLogFile(
       logPath,
       timestamp,
       alertType,
@@ -570,7 +570,7 @@ static esp_err_t ai_alert_handler(httpd_req_t* req) {
 
   bool firebaseUpdated = false;
   if (network != nullptr) {
-    firebaseUpdated = network->firestoreAiDataUpdate(
+    firebaseUpdated = network->firestoreDataUpdate(
       snapshot.temperature,
       snapshot.humidity,
       snapshot.gasValue,
@@ -788,9 +788,9 @@ void loop() {
   }
   yield();
 
-  if (sensor_ok) {
-    network->firestoreDataUpdate(tempC, humiPct, gasValue, fireValue);
-  }
+  // if (sensor_ok) {
+  //   network->firestoreDataUpdate(tempC, humiPct, gasValue, fireValue);
+  // }
 
   for (int i = 0; i < 10; i++) {
     delay(100);

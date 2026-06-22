@@ -16,8 +16,7 @@ class Network
         FirebaseConfig config;
         unsigned long lastUpdateTime = 0;
         unsigned long lastAiUpdateTime = 0;
-        const unsigned long UPDATE_INTERVAL = 6000; // 6 seconds - avoid SSL memory leak
-        const unsigned long AI_UPDATE_INTERVAL = 3000;
+        const unsigned long UPDATE_INTERVAL = 6000;
         const char* PARAM_INPUT_1 = "ssid";
         const char* PARAM_INPUT_2 = "pass";
         const char* PARAM_INPUT_3 = "ip";
@@ -44,8 +43,8 @@ class Network
         bool initWiFi();
         void firebaseInit();
         bool firebaseReady();
-        void firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue);
-        bool firestoreAiDataUpdate(
+        // void firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue);
+        bool firestoreDataUpdate(
             double temp,
             double humidity,
             int gasValue,

@@ -304,68 +304,68 @@ bool Network::firebaseReady()
     return Firebase.ready();
 }
 
-void Network::firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue)
-{
-    // Kiểm tra timeout để tránh gọi Firebase quá tần suất
-    unsigned long currentTime = millis();
-    if(currentTime - lastUpdateTime < UPDATE_INTERVAL)
-    {
-        yield();
-        return;
-    }
+// void Network::firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue)
+// {
+//     // Kiểm tra timeout để tránh gọi Firebase quá tần suất
+//     unsigned long currentTime = millis();
+//     if(currentTime - lastUpdateTime < UPDATE_INTERVAL)
+//     {
+//         yield();
+//         return;
+//     }
     
-    if(WiFi.status() != WL_CONNECTED)
-    {
-        static unsigned long lastWifiLogTime = 0;
-        if(currentTime - lastWifiLogTime >= 5000)
-        {
-            Serial.printf("[Firestore] Skip update: WiFi disconnected, status=%d\n", WiFi.status());
-            lastWifiLogTime = currentTime;
-        }
-        yield();
-        return;
-    }
+//     if(WiFi.status() != WL_CONNECTED)
+//     {
+//         static unsigned long lastWifiLogTime = 0;
+//         if(currentTime - lastWifiLogTime >= 5000)
+//         {
+//             Serial.printf("[Firestore] Skip update: WiFi disconnected, status=%d\n", WiFi.status());
+//             lastWifiLogTime = currentTime;
+//         }
+//         yield();
+//         return;
+//     }
 
-    if(!Firebase.ready())
-    {
-        static unsigned long lastFirebaseLogTime = 0;
-        if(currentTime - lastFirebaseLogTime >= 5000)
-        {
-            Serial.println("[Firestore] Skip update: Firebase is not ready yet");
-            lastFirebaseLogTime = currentTime;
-        }
-        yield();
-        return;
-    }
+//     if(!Firebase.ready())
+//     {
+//         static unsigned long lastFirebaseLogTime = 0;
+//         if(currentTime - lastFirebaseLogTime >= 5000)
+//         {
+//             Serial.println("[Firestore] Skip update: Firebase is not ready yet");
+//             lastFirebaseLogTime = currentTime;
+//         }
+//         yield();
+//         return;
+//     }
 
-    String documentPath = FIRESTORE_DOCUMENT_PATH;
-    FirebaseJson content;
+//     String documentPath = FIRESTORE_DOCUMENT_PATH;
+//     FirebaseJson content;
     
-    content.set("fields/temperatureValue/doubleValue", temp);
-    content.set("fields/humidityValue/doubleValue", humidity);
-    content.set("fields/smokeValue/integerValue", String(gasValue));
-    content.set("fields/fireValue/integerValue", String(fireValue));
+//     content.set("fields/temperatureValue/doubleValue", temp);
+//     content.set("fields/humidityValue/doubleValue", humidity);
+//     content.set("fields/smokeValue/integerValue", String(gasValue));
+//     content.set("fields/fireValue/integerValue", String(fireValue));
 
-    bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue,fireValue");
+//     bool success = Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "temperatureValue,humidityValue,smokeValue,fireValue");
     
-    if(success)
-    {
-        Serial.printf("[Firestore] Update SUCCESS\n");
-        lastUpdateTime = currentTime;
-        yield();
-    }
-    else
-    {
-        String errorMsg = fbdo.errorReason().c_str();
-        Serial.printf("[Firestore] Error: %s\n", errorMsg.c_str());
-        yield();
-    }
+//     if(success)
+//     {
+//         Serial.printf("[Firestore] Update SUCCESS\n");
+//         lastUpdateTime = currentTime;
+//         yield();
+//     }
+//     else
+//     {
+//         String errorMsg = fbdo.errorReason().c_str();
+//         Serial.printf("[Firestore] Error: %s\n", errorMsg.c_str());
+//         yield();
+//     }
     
-    // Force cleanup to avoid memory leak
-    fbdo.clear();
-}
+//     // Force cleanup to avoid memory leak
+//     fbdo.clear();
+// }
 
-bool Network::firestoreAiDataUpdate(
+bool Network::firestoreDataUpdate(
     double temp,
     double humidity,
     int gasValue,
@@ -381,7 +381,7 @@ bool Network::firestoreAiDataUpdate(
 )
 {
     unsigned long currentTime = millis();
-    if(currentTime - lastAiUpdateTime < AI_UPDATE_INTERVAL)
+    if(currentTime - lastAiUpdateTime < UPDATE_INTERVAL)
     {
         yield();
         return false;
