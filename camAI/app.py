@@ -32,6 +32,9 @@ DEFAULT_CONFIDENCE = 0.3
 DEFAULT_FRAME_WIDTH = 960
 DEFAULT_STREAM_ANALYSIS_SECONDS = 60
 DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS = 8.0
+ESP32_STREAM_PATH = "/stream"
+DEFAULT_AI_TARGET_FPS = 5
+DEFAULT_AI_CPU_THREADS = 2
 
 
 @dataclass(frozen=True)
@@ -409,8 +412,29 @@ SENSOR_TIMESTAMP_KEYS = (
 )
 
 
+def configure_ai_runtime(cpu_threads: int = DEFAULT_AI_CPU_THREADS) -> None:
+    cv2.setNumThreads(1)
+    try:
+        import torch
+    except Exception:
+        return
+
+    safe_cpu_threads = max(1, int(cpu_threads))
+    try:
+        torch.set_num_threads(safe_cpu_threads)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+    except Exception:
+        pass
+
+
 @st.cache_resource
 def load_model() -> YOLO:
+    configure_ai_runtime()
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Không tìm thấy model: {MODEL_PATH}")
     return YOLO(str(MODEL_PATH))
@@ -869,6 +893,19 @@ def build_alert_state(detected_names: list[str]) -> tuple[str, str]:
     return "normal", "Bình thường - không phát hiện nguy cơ cháy."
 
 
+def normalize_camera_stream_url(camera_url: str) -> str:
+    """Use the real MJPEG endpoint when the user enters only the ESP32 base URL."""
+    cleaned_url = camera_url.strip()
+    parts = urlsplit(cleaned_url)
+    if not parts.scheme or not parts.netloc:
+        return cleaned_url
+
+    normalized_path = parts.path.rstrip("/")
+    if normalized_path in ("", "/"):
+        return urlunsplit((parts.scheme, parts.netloc, ESP32_STREAM_PATH, "", ""))
+    return cleaned_url
+
+
 def _esp32_base_url_from_camera_url(camera_url: str) -> str:
     parts = urlsplit(camera_url.strip())
     if not parts.scheme or not parts.netloc:
@@ -975,7 +1012,8 @@ def render_offline_monitor(title: str, message: str) -> None:
 
 def can_open_stream(camera_url: str, timeout: float = 1.5) -> tuple[bool, str | None]:
     try:
-        request = Request(camera_url, headers={"Cache-Control": "no-cache"})
+        stream_url = normalize_camera_stream_url(camera_url)
+        request = Request(stream_url, headers={"Cache-Control": "no-cache"})
         with urlopen(request, timeout=timeout) as response:
             response.read(1)
         return True, None
@@ -988,14 +1026,25 @@ def process_video_source(
     confidence: float,
     frame_width: int,
     max_seconds: int | None = None,
+    send_ai_alerts: bool = False,
+    target_fps: float = DEFAULT_AI_TARGET_FPS,
 ) -> None:
-    model = load_model()
-    cap = cv2.VideoCapture(video_source)
+    stream_url = normalize_camera_stream_url(video_source)
+    configure_ai_runtime()
+
+    try:
+        model = load_model()
+    except Exception as exc:
+        st.error(f"Không tải được model YOLOv8: {exc}")
+        return
+
+    cap = cv2.VideoCapture(stream_url)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     if not cap.isOpened():
         render_offline_monitor(
             "Không có tín hiệu",
-            "Chưa có thiết bị để kết nối hoặc camera chưa phát luồng trực tiếp.",
+            f"Không mở được luồng camera tại {stream_url}. Hãy kiểm tra ESP32 có endpoint /stream.",
         )
         return
 
@@ -1004,20 +1053,33 @@ def process_video_source(
     detail_placeholder = st.empty()
     started_at = time.time()
     last_alert_sent_at = 0.0
+    failed_reads = 0
+    max_failed_reads = 30
+    target_frame_interval = 1.0 / max(1.0, float(target_fps))
 
     try:
         while cap.isOpened():
+            frame_started_at = time.time()
             if max_seconds is not None and time.time() - started_at >= max_seconds:
                 st.info("Đã dừng phân tích theo thời lượng đã đặt.")
                 break
 
             ok, frame = cap.read()
             if not ok:
-                st.success("Đã xử lý xong nguồn video.")
-                break
+                failed_reads += 1
+                if failed_reads >= max_failed_reads:
+                    st.warning("Luồng camera bị ngắt hoặc không đọc được frame liên tiếp. Đã dừng nhận diện.")
+                    break
+                time.sleep(0.1)
+                continue
+            failed_reads = 0
 
             frame = resize_frame(frame, frame_width)
-            results = model.predict(frame, conf=confidence, verbose=False)
+            try:
+                results = model.predict(frame, conf=confidence, verbose=False)
+            except Exception as exc:
+                st.error(f"Lỗi khi YOLOv8 xử lý khung hình: {exc}")
+                break
 
             detected_names: list[str] = []
             detections: list[str] = []
@@ -1037,7 +1099,7 @@ def process_video_source(
             should_send_alert = bool({"fire", "smoke"} & detected_set)
             esp32_alert_sent: bool | None = None
             now = time.time()
-            if should_send_alert and now - last_alert_sent_at >= DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS:
+            if send_ai_alerts and should_send_alert and now - last_alert_sent_at >= DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS:
                 esp32_alert_sent = send_alert_to_esp32(
                     video_source,
                     detected_names,
@@ -1060,13 +1122,18 @@ def process_video_source(
                 detail_placeholder.caption("Phát hiện: " + ", ".join(detections) + esp32_status)
             else:
                 detail_placeholder.caption("Không có đối tượng nào trong khung hình.")
+
+            processing_time = time.time() - frame_started_at
+            if processing_time < target_frame_interval:
+                time.sleep(target_frame_interval - processing_time)
     finally:
         cap.release()
 
 
 def render_live_camera(camera_url: str) -> None:
-    safe_url = escape(camera_url.strip(), quote=True)
-    can_connect, _ = can_open_stream(camera_url.strip())
+    stream_url = normalize_camera_stream_url(camera_url)
+    safe_url = escape(stream_url, quote=True)
+    can_connect, _ = can_open_stream(stream_url)
     if not can_connect:
         render_offline_monitor(
             "Không có tín hiệu",
@@ -1117,10 +1184,12 @@ with st.sidebar:
         value=DEFAULT_CAMERA_STREAM_URL,
     )
     show_live_camera = st.toggle("Hiển thị camera trực tiếp", value=True)
+    send_ai_alerts = st.toggle("Gửi cảnh báo AI về ESP32", value=False)
     start_clicked = st.button("Bắt đầu nhận diện cháy", use_container_width=True)
     confidence = DEFAULT_CONFIDENCE
     frame_width = DEFAULT_FRAME_WIDTH
     stream_analysis_seconds = DEFAULT_STREAM_ANALYSIS_SECONDS
+    target_fps = st.slider("FPS nhận diện AI", 1, 15, DEFAULT_AI_TARGET_FPS, 1)
 
     st.divider()
     st.header("Model")
@@ -1385,4 +1454,6 @@ if start_clicked:
             confidence,
             frame_width,
             max_seconds=stream_analysis_seconds,
+            send_ai_alerts=send_ai_alerts,
+            target_fps=target_fps,
         )
