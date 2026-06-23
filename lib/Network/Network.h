@@ -15,8 +15,9 @@ class Network
         FirebaseAuth auth;
         FirebaseConfig config;
         unsigned long lastUpdateTime = 0;
-        unsigned long lastAiUpdateTime = 0;
+        // unsigned long lastAiUpdateTime = 0;
         const unsigned long UPDATE_INTERVAL = 6000;
+        // const unsigned long AI_UPDATE_INTERVAL = 3000;
         const char* PARAM_INPUT_1 = "ssid";
         const char* PARAM_INPUT_2 = "pass";
         const char* PARAM_INPUT_3 = "ip";
@@ -28,7 +29,7 @@ class Network
         const char* gatewayPath = "/wifi/gateway.txt";
         IPAddress localIP;
         IPAddress localGateway;
-        IPAddress subnet = IPAddress(255, 255, 0, 0);
+        IPAddress subnet = IPAddress(255, 255, 255, 0);
         static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 10000;
 
         bool initConfigStorage();
@@ -43,20 +44,21 @@ class Network
         bool initWiFi();
         void firebaseInit();
         bool firebaseReady();
+        
         // void firestoreDataUpdate(double temp, double humidity, int gasValue, int fireValue);
         bool firestoreDataUpdate(
             double temp,
             double humidity,
             int gasValue,
             int fireValue,
-            bool cameraFireDetected,
-            bool cameraSmokeDetected,
-            bool sensorOverThreshold,
-            const String& alertType,
-            const String& edgeCase,
-            const String& imagePath,
-            const String& logPath,
-            const String& timestamp
+            bool cameraFireDetected = false,
+            bool cameraSmokeDetected = false,
+            bool sensorOverThreshold = false,
+            const String& alertType = "",
+            const String& edgeCase = "",
+            const String& imagePath = "",
+            const String& logPath = "",
+            const String& timestamp = ""
         );
 };
 

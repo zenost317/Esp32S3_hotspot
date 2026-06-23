@@ -381,65 +381,71 @@ bool Network::firestoreDataUpdate(
 )
 {
     unsigned long currentTime = millis();
-    if(currentTime - lastAiUpdateTime < UPDATE_INTERVAL)
-    {
+    if (currentTime - lastUpdateTime < UPDATE_INTERVAL) {
         yield();
         return false;
     }
 
-    if(WiFi.status() != WL_CONNECTED)
-    {
-        Serial.printf("[Firestore AI] Skip update: WiFi disconnected, status=%d\n", WiFi.status());
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastWifiLogTime = 0;
+        if (currentTime - lastWifiLogTime >= 5000) {
+            Serial.printf("[Firestore] Skip: WiFi disconnected, status=%d\n", WiFi.status());
+            lastWifiLogTime = currentTime;
+        }
         yield();
         return false;
     }
 
-    if(!Firebase.ready())
-    {
-        Serial.println("[Firestore AI] Skip update: Firebase is not ready yet");
+    if (!Firebase.ready()) {
+        static unsigned long lastFirebaseLogTime = 0;
+        if (currentTime - lastFirebaseLogTime >= 5000) {
+            Serial.println("[Firestore] Skip: Firebase not ready");
+            lastFirebaseLogTime = currentTime;
+        }
         yield();
         return false;
     }
 
-    String documentPath = FIRESTORE_DOCUMENT_PATH;
+    // --- Build payload ---
     FirebaseJson content;
-
     content.set("fields/temperatureValue/doubleValue", temp);
-    content.set("fields/humidityValue/doubleValue", humidity);
-    content.set("fields/smokeValue/integerValue", String(gasValue));
-    content.set("fields/fireValue/integerValue", String(fireValue));
-    content.set("fields/cameraFireDetected/booleanValue", cameraFireDetected);
-    content.set("fields/cameraSmokeDetected/booleanValue", cameraSmokeDetected);
-    content.set("fields/sensorOverThreshold/booleanValue", sensorOverThreshold);
-    content.set("fields/cameraAlertType/stringValue", alertType);
-    content.set("fields/edgeCase/stringValue", edgeCase);
-    content.set("fields/lastAiImagePath/stringValue", imagePath);
-    content.set("fields/lastAiLogPath/stringValue", logPath);
-    content.set("fields/aiUpdatedAt/stringValue", timestamp);
+    content.set("fields/humidityValue/doubleValue",    humidity);
+    content.set("fields/smokeValue/integerValue",      String(gasValue));
+    content.set("fields/fireValue/integerValue",       String(fireValue));
 
-    const char* updateMask =
-        "temperatureValue,humidityValue,smokeValue,fireValue,"
-        "cameraFireDetected,cameraSmokeDetected,sensorOverThreshold,"
-        "cameraAlertType,edgeCase,lastAiImagePath,lastAiLogPath,aiUpdatedAt";
+    String updateMask = "temperatureValue,humidityValue,smokeValue,fireValue";
 
+    // Nếu timestamp có giá trị → bổ sung AI fields
+    bool hasAiData = !timestamp.isEmpty();
+    if (hasAiData) {
+        content.set("fields/cameraFireDetected/booleanValue",  cameraFireDetected);
+        content.set("fields/cameraSmokeDetected/booleanValue", cameraSmokeDetected);
+        content.set("fields/sensorOverThreshold/booleanValue", sensorOverThreshold);
+        content.set("fields/cameraAlertType/stringValue",      alertType);
+        content.set("fields/edgeCase/stringValue",             edgeCase);
+        content.set("fields/lastAiImagePath/stringValue",      imagePath);
+        content.set("fields/lastAiLogPath/stringValue",        logPath);
+        content.set("fields/aiUpdatedAt/stringValue",          timestamp);
+
+        updateMask += ",cameraFireDetected,cameraSmokeDetected,sensorOverThreshold"
+                      ",cameraAlertType,edgeCase,lastAiImagePath,lastAiLogPath,aiUpdatedAt";
+    }
+
+    // --- Gửi lên Firestore ---
     bool success = Firebase.Firestore.patchDocument(
         &fbdo,
         FIREBASE_PROJECT_ID,
         "",
-        documentPath.c_str(),
+        FIRESTORE_DOCUMENT_PATH,
         content.raw(),
-        updateMask
+        updateMask.c_str()
     );
 
-    if(success)
-    {
-        Serial.println("[Firestore AI] Update SUCCESS");
-        lastAiUpdateTime = currentTime;
-    }
-    else
-    {
-        String errorMsg = fbdo.errorReason().c_str();
-        Serial.printf("[Firestore AI] Error: %s\n", errorMsg.c_str());
+    if (success) {
+        Serial.printf("[Firestore] Update OK%s\n", hasAiData ? " (+AI)" : "");
+        lastUpdateTime = currentTime;
+    } else {
+        Serial.printf("[Firestore] Error: %s\n", fbdo.errorReason().c_str());
     }
 
     fbdo.clear();

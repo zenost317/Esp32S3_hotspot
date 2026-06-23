@@ -46,14 +46,14 @@ float tempC = 0, humiPct = 0;
 #define TEMP_THRESHOLD_C 45.0f
 #define HUMIDITY_MIN_THRESHOLD 30.0f
 #define HUMIDITY_MAX_THRESHOLD 85.0f
-#define GAS_THRESHOLD 500
-#define FIRE_SENSOR_THRESHOLD 1500
+#define GAS_THRESHOLD 1000
+#define FIRE_SENSOR_THRESHOLD 1000
 #define FIRE_SENSOR_ACTIVE_LOW true
 
 #define BUZZER_TONE_HZ 1000
 #define BUZZER_ON_MS 250
-#define BUZZER_OFF_MS 250
-#define BUZZER_ALERT_DURATION_MS 30000
+#define BUZZER_OFF_MS 200
+#define BUZZER_ALERT_DURATION_MS 10000
 
 #define AI_ALERT_MIN_SAVE_INTERVAL_MS 5000
 #define TZ_OFFSET_SECONDS 25200
@@ -216,13 +216,12 @@ static bool isFireSensorOverThreshold(int fireValue) {
 }
 
 static bool sensorsOverThreshold(const SensorSnapshot& snapshot) {
-  bool temperatureDanger = snapshot.sensorOk && snapshot.temperature >= TEMP_THRESHOLD_C;
-  bool humidityDanger = snapshot.sensorOk &&
-                        (snapshot.humidity < HUMIDITY_MIN_THRESHOLD ||
-                         snapshot.humidity > HUMIDITY_MAX_THRESHOLD);
+  // bool temperatureDanger = snapshot.sensorOk && snapshot.temperature >= TEMP_THRESHOLD_C;
+  // bool humidityDanger = snapshot.sensorOk && (snapshot.humidity < HUMIDITY_MIN_THRESHOLD || snapshot.humidity > HUMIDITY_MAX_THRESHOLD);
   bool gasDanger = snapshot.gasValue >= GAS_THRESHOLD;
-  bool fireDanger = isFireSensorOverThreshold(snapshot.fireValue);
-  return temperatureDanger || humidityDanger || gasDanger || fireDanger;
+  // bool fireDanger = snapshot.sensorOk && isFireSensorOverThreshold(snapshot.fireValue);
+  // return temperatureDanger || humidityDanger || gasDanger || fireDanger;
+  return gasDanger;
 }
 
 static String getQueryValue(httpd_req_t* req, const char* key) {
@@ -393,13 +392,13 @@ static bool initCamera() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
 
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 24000000;
   config.pixel_format = PIXFORMAT_JPEG; // for streaming
 
 
   // Tối ưu ổn định trước
   config.frame_size   = FRAMESIZE_VGA;
-  config.jpeg_quality = 15;
+  config.jpeg_quality = 13;
   config.fb_count     = 2;
 
   // Nếu không có PSRAM, giảm cấu hình để tránh crash
@@ -564,7 +563,7 @@ static esp_err_t ai_alert_handler(httpd_req_t* req) {
     }
   }
 
-  if (cameraFireDetected && sensorOverLimit) {
+  if (sensorOverLimit) {
     triggerBuzzerAlert();
   }
 
@@ -719,11 +718,9 @@ void setup() {
   // Connect to Wi-Fi, or start the WiFi Manager AP when saved config fails.
   bool wifiConnected = initNetwork();
   if (wifiConnected) {
+    startCameraServer();
     initTimeSync();
     network->firebaseInit();
-
-    // Server
-    startCameraServer();
   } else if (displayReady) {
     display.clearDisplay();
     display.setCursor(0, 0);
@@ -745,9 +742,13 @@ void loop() {
   int fireValue = analogRead(Fire_Pin);
   yield();
 
-  float tempC = 0, humiPct = 0;
   bool sensor_ok = sensorRead(tempC, humiPct); // retry nằm trong SensorHandler
   updateSensorSnapshot(tempC, humiPct, gasValue, fireValue, sensor_ok);
+
+  SensorSnapshot snap = getSensorSnapshot();
+  if (sensorsOverThreshold(snap)) {
+    triggerBuzzerAlert();
+  }
 
   if (displayReady) {
     display.clearDisplay();
@@ -788,9 +789,9 @@ void loop() {
   }
   yield();
 
-  // if (sensor_ok) {
-  //   network->firestoreDataUpdate(tempC, humiPct, gasValue, fireValue);
-  // }
+  if (sensor_ok && network != nullptr) {
+    network->firestoreDataUpdate(tempC, humiPct, gasValue, fireValue);
+  }
 
   for (int i = 0; i < 10; i++) {
     delay(100);
