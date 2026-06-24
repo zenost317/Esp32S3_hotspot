@@ -125,33 +125,88 @@ String Network::readTextFile(const char* path)
 
 bool Network::connectToSavedWiFi()
 {
-    if (ssid == "" || ip == "" || gateway == "") {
-        Serial.println("Undefined SSID, IP address, or gateway.");
+    if (ssid == "") {
+        Serial.println("[WiFi] No saved SSID. Starting AP.");
         return false;
     }
 
+    // --- Bước 1: Scan để kiểm tra SSID có trong vùng phủ sóng không ---
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false);   // đảm bảo không còn kết nối STA cũ
+    delay(100);
 
-    if (!localIP.fromString(ip.c_str()) || !localGateway.fromString(gateway.c_str())) {
-        Serial.println("Invalid IP address or gateway.");
+    Serial.printf("[WiFi] Scanning for saved SSID: \"%s\" ...\n", ssid.c_str());
+    int numNetworks = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/false);
+
+    if (numNetworks == WIFI_SCAN_FAILED || numNetworks < 0) {
+        Serial.println("[WiFi] Scan failed. Starting AP.");
+        WiFi.scanDelete();
         return false;
     }
 
-    IPAddress dns1 = localGateway;   // router thường tự forward DNS
-    IPAddress dns2(8, 8, 8, 8);      // Google DNS dự phòng
-
-    if (!WiFi.config(localIP, localGateway, subnet, dns1, dns2)) {
-        Serial.println("STA Failed to configure");
+    if (numNetworks == 0) {
+        Serial.println("[WiFi] No networks found. Starting AP.");
+        WiFi.scanDelete();
         return false;
     }
 
+    bool ssidFound = false;
+    int bestRSSI = -1000;
+    Serial.printf("[WiFi] Found %d network(s):\n", numNetworks);
+    for (int i = 0; i < numNetworks; i++) {
+        String foundSSID = WiFi.SSID(i);
+        int rssi = WiFi.RSSI(i);
+        Serial.printf("  [%d] \"%s\" RSSI=%d\n", i, foundSSID.c_str(), rssi);
+        if (foundSSID == ssid) {
+            ssidFound = true;
+            if (rssi > bestRSSI) bestRSSI = rssi;
+        }
+    }
+    WiFi.scanDelete();
+
+    if (!ssidFound) {
+        Serial.printf("[WiFi] Saved SSID \"%s\" not found in scan. Starting AP.\n", ssid.c_str());
+        return false;
+    }
+
+    Serial.printf("[WiFi] SSID \"%s\" found (best RSSI=%d). Connecting...\n", ssid.c_str(), bestRSSI);
+
+    // --- Bước 2: Cấu hình IP ---
+    bool useStaticIP = (ip != "" && gateway != "");
+
+    if (useStaticIP) {
+        // Có IP tĩnh → dùng WiFi.config() (phù hợp router nhà)
+        if (!localIP.fromString(ip.c_str()) || !localGateway.fromString(gateway.c_str())) {
+            Serial.println("[WiFi] Invalid static IP or gateway in config. Falling back to DHCP.");
+            useStaticIP = false;
+        } else {
+            IPAddress dns1 = localGateway;
+            IPAddress dns2(8, 8, 8, 8);
+            if (!WiFi.config(localIP, localGateway, subnet, dns1, dns2)) {
+                Serial.println("[WiFi] WiFi.config() failed. Falling back to DHCP.");
+                useStaticIP = false;
+            }
+        }
+    }
+
+    if (!useStaticIP) {
+        // DHCP — ESP32 tự xin IP (phù hợp hotspot di động, mạng lạ)
+        // Gọi WiFi.config với tất cả 0 để reset về DHCP
+        WiFi.config(IPAddress(0,0,0,0), IPAddress(0,0,0,0), IPAddress(0,0,0,0));
+        Serial.println("[WiFi] Using DHCP (no static IP configured).");
+    } else {
+        Serial.printf("[WiFi] Using static IP: %s / GW: %s\n", ip.c_str(), gateway.c_str());
+    }
+
+    // --- Bước 3: Kết nối ---
     WiFi.begin(ssid.c_str(), pass.c_str());
-    Serial.println("Connecting to WiFi...");
 
     unsigned long startedAt = millis();
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - startedAt >= WIFI_CONNECT_TIMEOUT_MS) {
-            Serial.println("Failed to connect.");
+            Serial.println("\n[WiFi] Connection timeout. Starting AP.");
+            WiFi.disconnect(true);   // tắt STA, giải phóng radio trước khi chuyển AP
+            delay(100);
             return false;
         }
         delay(500);
@@ -160,10 +215,11 @@ bool Network::connectToSavedWiFi()
     }
 
     Serial.println();
-    Serial.print("WiFi connected, IP: ");
-    Serial.println(WiFi.localIP());
-    WiFi.onEvent(WiFiEventConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
-    WiFi.onEvent(WiFiEventGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+    Serial.printf("[WiFi] Connected! IP: %s (via %s)\n",
+                  WiFi.localIP().toString().c_str(),
+                  useStaticIP ? "static" : "DHCP");
+    WiFi.onEvent(WiFiEventConnected,    ARDUINO_EVENT_WIFI_STA_CONNECTED);
+    WiFi.onEvent(WiFiEventGotIP,        ARDUINO_EVENT_WIFI_STA_GOT_IP);
     WiFi.onEvent(WiFiEventDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.setAutoReconnect(true);
     return true;
@@ -171,14 +227,14 @@ bool Network::connectToSavedWiFi()
 
 void Network::startConfigPortal()
 {
-    Serial.println("Setting AP (Access Point)");
+    Serial.println("[AP] Starting config portal (Access Point mode)");
     WiFi.disconnect(false);
     delay(100);
     WiFi.mode(WIFI_AP);
     WiFi.softAP("ESP-WIFI-MANAGER", nullptr);
 
     IPAddress apIP = WiFi.softAPIP();
-    Serial.print("AP IP address: ");
+    Serial.print("[AP] IP address: ");
     Serial.println(apIP);
 
     server.on("/", HTTP_GET,
@@ -196,8 +252,31 @@ void Network::startConfigPortal()
     });
 
     server.on("/", HTTP_POST, [this](AsyncWebServerRequest *request) {
-        bool saved = true;
+        // --- Debug: in toàn bộ params nhận được ---
         int params = request->params();
+        Serial.printf("[AP] POST received: %d param(s)\n", params);
+
+        if (params == 0) {
+            Serial.println("[AP] WARNING: No POST params received! Check form enctype.");
+            request->send(400, "text/plain", "No parameters received. Check form encoding.");
+            return;
+        }
+
+        for (int i = 0; i < params; i++) {
+            const AsyncWebParameter* p = request->getParam(i);
+            Serial.printf("[AP]  param[%d] name=\"%s\" value=\"%s\" isPost=%d\n",
+                          i, p->name().c_str(), p->value().c_str(), p->isPost() ? 1 : 0);
+        }
+
+        // --- Kiểm tra SD card có sẵn không ---
+        if (SD_MMC.cardType() == CARD_NONE) {
+            Serial.println("[AP] ERROR: SD card not mounted. Cannot save WiFi config.");
+            request->send(500, "text/plain", "SD card not available. Cannot save config.");
+            return;
+        }
+
+        // --- Đọc và lưu từng param ---
+        bool saved = true;
         for (int i = 0; i < params; i++) {
             const AsyncWebParameter* p = request->getParam(i);
             if (!p->isPost()) {
@@ -206,39 +285,52 @@ void Network::startConfigPortal()
 
             if (p->name() == PARAM_INPUT_1) {
                 ssid = p->value().c_str();
-                Serial.print("SSID set to: ");
-                Serial.println(ssid);
+                Serial.printf("[AP] SSID     = \"%s\"\n", ssid.c_str());
                 saved = writeConfigFile(ssidPath, ssid.c_str()) && saved;
             }
 
             if (p->name() == PARAM_INPUT_2) {
                 pass = p->value().c_str();
-                Serial.print("Password set to: ");
-                Serial.println(pass);
+                Serial.printf("[AP] Password = \"%s\" (%d chars)\n", pass.c_str(), pass.length());
                 saved = writeConfigFile(passPath, pass.c_str()) && saved;
             }
 
+            // IP và gateway là tùy chọn — để trống = dùng DHCP (hotspot di động)
             if (p->name() == PARAM_INPUT_3) {
                 ip = p->value().c_str();
-                Serial.print("IP Address set to: ");
-                Serial.println(ip);
+                ip.trim();
+                Serial.printf("[AP] IP       = \"%s\"%s\n", ip.c_str(), ip.isEmpty() ? " (DHCP)" : "");
                 saved = writeConfigFile(ipPath, ip.c_str()) && saved;
             }
 
             if (p->name() == PARAM_INPUT_4) {
                 gateway = p->value().c_str();
-                Serial.print("Gateway set to: ");
-                Serial.println(gateway);
+                gateway.trim();
+                Serial.printf("[AP] Gateway  = \"%s\"%s\n", gateway.c_str(), gateway.isEmpty() ? " (DHCP)" : "");
                 saved = writeConfigFile(gatewayPath, gateway.c_str()) && saved;
             }
         }
 
-        if (!saved) {
-            request->send(500, "text/plain", "Failed to save WiFi config to SD card. Please check SD card.");
+        // SSID là trường bắt buộc
+        if (ssid.isEmpty()) {
+            request->send(400, "text/plain", "SSID is required.");
             return;
         }
 
-        request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
+        if (!saved) {
+            Serial.println("[AP] ERROR: Failed to write one or more config files to SD card.");
+            request->send(500, "text/plain", "Failed to save WiFi config. Check SD card.");
+            return;
+        }
+
+        Serial.println("[AP] Config saved. Restarting in 3s...");
+        String msg = "Done. ESP will restart and ";
+        if (ip.isEmpty()) {
+            msg += "use DHCP (IP assigned by hotspot).";
+        } else {
+            msg += "connect to: " + ip;
+        }
+        request->send(200, "text/plain", msg);
         delay(3000);
         ESP.restart();
     });
@@ -258,6 +350,7 @@ void Network::startConfigPortal()
     });
 
     server.begin();
+    Serial.println("[AP] Web server started on port 80");
 }
 
 bool Network::initWiFi()
@@ -265,21 +358,25 @@ bool Network::initWiFi()
     bool storageReady = initConfigStorage();
 
     if (storageReady) {
-        ssid = readConfigFile(ssidPath);
-        pass = readConfigFile(passPath);
-        ip = readConfigFile(ipPath);
-        gateway = readConfigFile(gatewayPath);
-    }
+        ssid     = readConfigFile(ssidPath);
+        pass     = readConfigFile(passPath);
+        ip       = readConfigFile(ipPath);
+        gateway  = readConfigFile(gatewayPath);
 
-    Serial.println(ssid);
-    Serial.println(pass);
-    Serial.println(ip);
-    Serial.println(gateway);
+        Serial.println("[WiFi] Loaded config from SD:");
+        Serial.printf("  SSID    = \"%s\"\n", ssid.c_str());
+        Serial.printf("  Pass    = \"%s\" (%d chars)\n", pass.c_str(), pass.length());
+        Serial.printf("  IP      = \"%s\"\n", ip.c_str());
+        Serial.printf("  Gateway = \"%s\"\n", gateway.c_str());
+    } else {
+        Serial.println("[WiFi] SD storage not ready. Cannot load saved credentials.");
+    }
 
     if (connectToSavedWiFi()) {
-        return true;
+        return true;  // kết nối thành công
     }
 
+    // Không kết nối được → mở AP để cấu hình
     startConfigPortal();
     return false;
 }

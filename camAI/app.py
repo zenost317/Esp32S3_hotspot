@@ -13,6 +13,9 @@ import base64
 import json
 import re
 import time
+import threading
+import queue
+import numpy as np
 
 import cv2
 import streamlit as st
@@ -410,6 +413,89 @@ SENSOR_TIMESTAMP_KEYS = (
     "createdAt",
     "ts",
 )
+
+class MJPEGStreamReader:
+    """
+    Đọc MJPEG stream từ ESP32 bằng HTTP thuần — không dùng FFmpeg.
+    Background thread luôn consume frame, tránh stall ESP32.
+    Queue có maxsize=2: tự drop frame cũ khi inference chậm.
+    """
+
+    def __init__(self, url: str, maxsize: int = 2):
+        self._url = url
+        self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.is_connected = False
+        self.error: str | None = None
+
+    def start(self) -> "MJPEGStreamReader":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=5)
+
+    def read(self, timeout: float = 2.0) -> tuple[bool, np.ndarray | None]:
+        try:
+            return True, self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return False, None
+
+    def _put_frame(self, frame: np.ndarray) -> None:
+        # Queue đầy → drop frame cũ nhất, ưu tiên frame mới nhất
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self._queue.put_nowait(frame)
+        except queue.Full:
+            pass
+
+    def _read_loop(self) -> None:
+        from urllib.request import urlopen, Request as URLRequest
+        try:
+            req = URLRequest(
+                self._url,
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+            with urlopen(req, timeout=15) as response:
+                self.is_connected = True
+                buf = b""
+                while not self._stop_event.is_set():
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    buf += chunk
+
+                    # Buffer quá lớn (>2MB) → cắt từ JPEG start gần nhất
+                    if len(buf) > 2 * 1024 * 1024:
+                        idx = buf.rfind(b"\xff\xd8")
+                        buf = buf[idx:] if idx != -1 else b""
+
+                    # Parse JPEG frames bằng SOI/EOI marker
+                    while True:
+                        start = buf.find(b"\xff\xd8")
+                        if start == -1:
+                            buf = buf[-1:]  # giữ 1 byte phòng marker bị cắt ngang chunk
+                            break
+                        end = buf.find(b"\xff\xd9", start + 2)
+                        if end == -1:
+                            break
+                        jpeg = buf[start : end + 2]
+                        buf = buf[end + 2 :]
+
+                        arr = np.frombuffer(jpeg, dtype=np.uint8)
+                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            self._put_frame(frame)
+
+        except Exception as exc:
+            self.error = str(exc)
+            self.is_connected = False
 
 
 def configure_ai_runtime(cpu_threads: int = DEFAULT_AI_CPU_THREADS) -> None:
@@ -1038,47 +1124,53 @@ def process_video_source(
         st.error(f"Không tải được model YOLOv8: {exc}")
         return
 
-    cap = cv2.VideoCapture(stream_url)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    reader = MJPEGStreamReader(stream_url, maxsize=2).start()
 
-    if not cap.isOpened():
+    # Chờ kết nối tối đa 5 giây
+    deadline = time.time() + 5.0
+    with st.spinner("Đang kết nối stream ESP32..."):
+        while not reader.is_connected and reader.error is None and time.time() < deadline:
+            time.sleep(0.1)
+
+    if not reader.is_connected:
+        reader.stop()
         render_offline_monitor(
             "Không có tín hiệu",
-            f"Không mở được luồng camera tại {stream_url}. Hãy kiểm tra ESP32 có endpoint /stream.",
+            f"Không kết nối được đến {stream_url}: {reader.error or 'Timeout'}",
         )
         return
 
     frame_placeholder = st.empty()
     status_placeholder = st.empty()
     detail_placeholder = st.empty()
+
     started_at = time.time()
     last_alert_sent_at = 0.0
     failed_reads = 0
-    max_failed_reads = 30
-    target_frame_interval = 1.0 / max(1.0, float(target_fps))
+    max_failed_reads = 10
 
     try:
-        while cap.isOpened():
-            frame_started_at = time.time()
+        while True:
             if max_seconds is not None and time.time() - started_at >= max_seconds:
                 st.info("Đã dừng phân tích theo thời lượng đã đặt.")
                 break
 
-            ok, frame = cap.read()
+            # Background thread đã drop frame cũ → luôn nhận frame mới nhất
+            ok, frame = reader.read(timeout=2.0)
             if not ok:
                 failed_reads += 1
                 if failed_reads >= max_failed_reads:
-                    st.warning("Luồng camera bị ngắt hoặc không đọc được frame liên tiếp. Đã dừng nhận diện.")
+                    st.warning("Luồng camera bị ngắt hoặc không nhận được frame.")
                     break
-                time.sleep(0.1)
                 continue
             failed_reads = 0
 
             frame = resize_frame(frame, frame_width)
+
             try:
                 results = model.predict(frame, conf=confidence, verbose=False)
             except Exception as exc:
-                st.error(f"Lỗi khi YOLOv8 xử lý khung hình: {exc}")
+                st.error(f"Lỗi YOLOv8: {exc}")
                 break
 
             detected_names: list[str] = []
@@ -1093,42 +1185,46 @@ def process_video_source(
 
             level, message = build_alert_state(detected_names)
             annotated_frame = results[0].plot()
-            annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
 
-            detected_set = {name.lower() for name in detected_names}
-            should_send_alert = bool({"fire", "smoke"} & detected_set)
-            esp32_alert_sent: bool | None = None
-            now = time.time()
-            if send_ai_alerts and should_send_alert and now - last_alert_sent_at >= DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS:
-                esp32_alert_sent = send_alert_to_esp32(
-                    video_source,
-                    detected_names,
-                    annotated_frame,
-                    detections,
-                )
-                last_alert_sent_at = now
-
-            frame_placeholder.html(render_processed_frame(annotated_frame, level, message))
-
+            # st.image() thay vì html(base64)
+            frame_placeholder.image(
+                annotated_frame_rgb,
+                channels="RGB",
+                use_container_width=True,
+            )
             with status_placeholder.container():
                 show_status(level, message)
 
+            detected_set = {n.lower() for n in detected_names}
+            should_send_alert = bool({"fire", "smoke"} & detected_set)
+            esp32_alert_sent: bool | None = None
+
+            if (
+                send_ai_alerts
+                and should_send_alert
+                and time.time() - last_alert_sent_at >= DEFAULT_AI_ALERT_SEND_INTERVAL_SECONDS
+            ):
+                esp32_alert_sent = send_alert_to_esp32(
+                    video_source,
+                    detected_names,
+                    annotated_frame_rgb,
+                    detections,
+                )
+                last_alert_sent_at = time.time()
+
             if detections:
-                esp32_status = ""
+                suffix = ""
                 if esp32_alert_sent is True:
-                    esp32_status = " | ESP32: đã nhận cảnh báo"
+                    suffix = " | ✅ ESP32 đã nhận cảnh báo"
                 elif esp32_alert_sent is False:
-                    esp32_status = " | ESP32: chưa nhận được cảnh báo"
-                detail_placeholder.caption("Phát hiện: " + ", ".join(detections) + esp32_status)
+                    suffix = " | ⚠️ ESP32 chưa nhận được"
+                detail_placeholder.caption("Phát hiện: " + ", ".join(detections) + suffix)
             else:
                 detail_placeholder.caption("Không có đối tượng nào trong khung hình.")
 
-            processing_time = time.time() - frame_started_at
-            if processing_time < target_frame_interval:
-                time.sleep(target_frame_interval - processing_time)
     finally:
-        cap.release()
-
+        reader.stop()
 
 def render_live_camera(camera_url: str) -> None:
     stream_url = normalize_camera_stream_url(camera_url)

@@ -740,6 +740,7 @@ void loop() {
 
   int gasValue = analogRead(MP2_Pin);
   int fireValue = analogRead(Fire_Pin);
+  float inTemp = temperatureRead();
   yield();
 
   bool sensor_ok = sensorRead(tempC, humiPct); // retry nằm trong SensorHandler
@@ -761,7 +762,7 @@ void loop() {
       display.println("Gas:");
       display.println(gasValue);
       display.println("Fire:");
-      display.println(fireValue);
+      display.println(inTemp);
     } else {
       display.setCursor(0, 0);
       display.print(F("Temp: "));
@@ -782,7 +783,7 @@ void loop() {
 
       display.setCursor(70, 20);
       display.print(F("Fire: "));
-      display.println(fireValue);
+      display.println(inTemp);
     }
 
     display.display();
