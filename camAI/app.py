@@ -304,6 +304,8 @@ if "weather_cache" not in st.session_state:
     st.session_state.weather_cache_time = 0.0
 if "force_update" not in st.session_state:
     st.session_state.force_update = False
+if "ai_running" not in st.session_state:
+    st.session_state.ai_running = False
 
 
 TEMPERATURE_ICON = """
@@ -1118,22 +1120,31 @@ def process_video_source(
     stream_url = normalize_camera_stream_url(video_source)
     configure_ai_runtime()
 
+    # Đánh dấu AI đang chạy để ngăn render_live_camera mở kết nối song song
+    st.session_state.ai_running = True
+
     try:
         model = load_model()
     except Exception as exc:
         st.error(f"Không tải được model YOLOv8: {exc}")
+        st.session_state.ai_running = False
         return
+
+    # Chờ 1.5s để trình duyệt giải phóng kết nối MJPEG cũ (từ <img src>).
+    # ESP32-CAM chỉ hỗ trợ 1 kết nối stream đồng thời.
+    time.sleep(1.5)
 
     reader = MJPEGStreamReader(stream_url, maxsize=2).start()
 
-    # Chờ kết nối tối đa 5 giây
-    deadline = time.time() + 5.0
+    # Chờ kết nối tối đa 8 giây (tăng từ 5s để ESP32 có thời gian sẵn sàng)
+    deadline = time.time() + 8.0
     with st.spinner("Đang kết nối stream ESP32..."):
         while not reader.is_connected and reader.error is None and time.time() < deadline:
             time.sleep(0.1)
 
     if not reader.is_connected:
         reader.stop()
+        st.session_state.ai_running = False
         render_offline_monitor(
             "Không có tín hiệu",
             f"Không kết nối được đến {stream_url}: {reader.error or 'Timeout'}",
@@ -1147,16 +1158,19 @@ def process_video_source(
     started_at = time.time()
     last_alert_sent_at = 0.0
     failed_reads = 0
-    max_failed_reads = 10
+    max_failed_reads = 15
+    frame_interval = 1.0 / max(1, target_fps)
 
     try:
         while True:
-            if max_seconds is not None and time.time() - started_at >= max_seconds:
+            loop_start = time.time()
+
+            if max_seconds is not None and loop_start - started_at >= max_seconds:
                 st.info("Đã dừng phân tích theo thời lượng đã đặt.")
                 break
 
             # Background thread đã drop frame cũ → luôn nhận frame mới nhất
-            ok, frame = reader.read(timeout=2.0)
+            ok, frame = reader.read(timeout=3.0)
             if not ok:
                 failed_reads += 1
                 if failed_reads >= max_failed_reads:
@@ -1223,19 +1237,27 @@ def process_video_source(
             else:
                 detail_placeholder.caption("Không có đối tượng nào trong khung hình.")
 
+            # Giới hạn FPS để không quá tải ESP32 và CPU
+            elapsed = time.time() - loop_start
+            sleep_time = frame_interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
     finally:
         reader.stop()
+        st.session_state.ai_running = False
 
 def render_live_camera(camera_url: str) -> None:
-    stream_url = normalize_camera_stream_url(camera_url)
-    safe_url = escape(stream_url, quote=True)
-    can_connect, _ = can_open_stream(stream_url)
-    if not can_connect:
-        render_offline_monitor(
-            "Không có tín hiệu",
-            "Chưa có thiết bị để kết nối hoặc camera chưa phát luồng trực tiếp.",
-        )
+    # Nếu AI đang chạy hoặc sắp chạy, KHÔNG mở kết nối stream từ browser
+    # vì ESP32-CAM chỉ hỗ trợ 1 kết nối MJPEG đồng thời.
+    if st.session_state.get("ai_running", False):
+        st.info("Camera đang được sử dụng bởi AI nhận diện cháy. Khung hình xử lý hiển thị ở phần bên dưới.")
         return
+
+    stream_url = normalize_camera_stream_url(camera_url)
+    # Thêm timestamp vào URL để tránh browser cache kết nối cũ
+    cache_buster = f"{'&' if '?' in stream_url else '?'}_t={int(time.time())}"
+    safe_url = escape(stream_url + cache_buster, quote=True)
 
     st.html(
         f"""
@@ -1531,10 +1553,12 @@ st.markdown('<div class="section-title">Camera trực tiếp</div>', unsafe_allo
 
 is_live_ai_running = start_clicked
 
-if show_live_camera and not is_live_ai_running:
+if is_live_ai_running:
+    # Khi AI đang chạy, KHÔNG embed <img src="/stream"> vào browser
+    # để tránh mở 2 kết nối đồng thời đến ESP32 (chỉ hỗ trợ 1)
+    st.info("⚡ Đang dùng luồng ESP32-CAM cho AI nhận diện cháy. Khung hình xử lý sẽ hiển thị ở phần bên dưới.")
+elif show_live_camera:
     render_live_camera(camera_stream_url)
-elif is_live_ai_running:
-    st.info("Đang dùng luồng ESP32-CAM cho. Khung xử lý sẽ hiển thị ở phần bên dưới.")
 else:
     st.info("Bật 'Hiển thị camera trực tiếp' trong sidebar để xem luồng ESP32-CAM.")
 
