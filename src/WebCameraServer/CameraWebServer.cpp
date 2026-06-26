@@ -22,7 +22,7 @@ bool initNetwork();
 
 Network *network;
 
-// Pin SD card trên ESP32-S3 WROOM N16R8 CAM
+// Pin SD card 
 #define SD_MMC_CLK  39
 #define SD_MMC_CMD  38
 #define SD_MMC_D0   40
@@ -92,7 +92,7 @@ void sdSetup() {
   // Bắt buộc setPins() TRƯỚC begin() trên ESP32-S3
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
 
-  // 1-bit mode (true) — đúng với hardware của board này
+  // 1-bit mode (true)
   if (!SD_MMC.begin("/sdcard", true)) {
     Serial.println("SD_MMC mount failed");
     return;
